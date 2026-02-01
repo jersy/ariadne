@@ -69,13 +69,15 @@ class ImpactAnalyzer:
             raise ValueError(f"Symbol not found: {target_fqn}")
 
         # 1. Find all callers via reverse traversal
-        callers = self._find_callers(target_fqn, depth)
+        # Returns (callers, symbol_map) tuple to avoid N+1 queries
+        result = self._find_callers_with_symbols(target_fqn, depth)
+        callers, symbol_map = result
 
         # 2. Map callers to entry points
         entry_points = self._map_to_entry_points(callers)
 
-        # 3. Find related tests
-        tests = self._find_related_tests(callers) if include_tests else []
+        # 3. Find related tests (pass symbol_map to avoid N+1 queries)
+        tests = self._find_related_tests(callers, symbol_map) if include_tests else []
 
         # 4. Detect missing coverage
         missing_coverage = self._detect_missing_coverage(callers, tests) if include_tests else []
@@ -100,8 +102,19 @@ class ImpactAnalyzer:
             confidence=confidence,
         )
 
-    def _find_callers(self, target_fqn: str, max_depth: int) -> list[dict[str, Any]]:
-        """Find all callers of target_fqn using reverse traversal."""
+    def _find_callers_with_symbols(
+        self,
+        target_fqn: str,
+        max_depth: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        """Find all callers of target_fqn using reverse traversal.
+
+        Uses recursive CTE to fetch entire call tree in a single query,
+        then batch fetches symbols for layer determination to avoid N+1 queries.
+
+        Returns:
+            Tuple of (callers list, symbol_map dict) for reuse in other methods
+        """
         cursor = self.store.conn.cursor()
 
         cursor.execute(
@@ -126,16 +139,34 @@ class ImpactAnalyzer:
         )
 
         callers = []
+        caller_fqns = []
+
+        # First pass: collect all callers and their FQNs
         for row in cursor.fetchall():
             caller = dict(row)
-            # Get layer information
-            symbol = self.store.get_symbol(caller["from_fqn"])
-            if symbol:
-                layer = determine_layer_or_unknown(symbol)
-                caller["layer"] = layer
+            caller["layer"] = None  # Will be filled in batch
             callers.append(caller)
+            caller_fqns.append(caller["from_fqn"])
 
-        return callers
+        # Batch fetch: Get all symbols for layer determination in ONE query
+        symbol_map: dict[str, dict[str, Any]] = {}
+        if caller_fqns:
+            placeholders = ",".join("?" * len(caller_fqns))
+            symbols = cursor.execute(
+                f"SELECT * FROM symbols WHERE fqn IN ({placeholders})",
+                caller_fqns
+            ).fetchall()
+
+            # Build lookup map
+            symbol_map = {row["fqn"]: dict(row) for row in symbols}
+
+            # Second pass: attach layer information from map
+            for caller in callers:
+                symbol = symbol_map.get(caller["from_fqn"])
+                if symbol:
+                    caller["layer"] = determine_layer_or_unknown(symbol)
+
+        return callers, symbol_map
 
     def _map_to_entry_points(self, callers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Map callers to entry points."""
@@ -175,16 +206,45 @@ class ImpactAnalyzer:
 
         return entry_points
 
-    def _find_related_tests(self, callers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Find test files related to callers using file path heuristics."""
+    def _find_related_tests(
+        self,
+        callers: list[dict[str, Any]],
+        symbol_map: dict[str, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Find test files related to callers using file path heuristics.
+
+        Args:
+            callers: List of caller dictionaries
+            symbol_map: Optional pre-fetched map of FQN to symbol data
+                      to avoid N+1 queries
+        """
         from ariadne_analyzer.l3_implementation.test_mapper import TestMapper
 
         test_mapper = TestMapper(self.store)
         tests = []
 
+        # Group callers by file path to batch process
+        file_path_to_callers: dict[str, list[str]] = {}
         for caller in callers:
             caller_fqn = caller["from_fqn"]
-            test_info = test_mapper.find_tests_for_symbol(caller_fqn)
+
+            # Use pre-fetched symbol data if available
+            if symbol_map and caller_fqn in symbol_map:
+                symbol = symbol_map[caller_fqn]
+            else:
+                symbol = self.store.get_symbol(caller_fqn)
+
+            if not symbol or not symbol.get("file_path"):
+                continue
+
+            file_path = symbol["file_path"]
+            if file_path not in file_path_to_callers:
+                file_path_to_callers[file_path] = []
+            file_path_to_callers[file_path].append(caller_fqn)
+
+        # Find tests for each unique file path
+        for file_path, fqns in file_path_to_callers.items():
+            test_info = test_mapper.find_tests_for_file_path(file_path, fqns)
             if test_info:
                 tests.append(test_info)
 
