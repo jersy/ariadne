@@ -1,0 +1,8 @@
+#!/bin/bash
+# Create a marker file to prove hook ran
+MARKER_FILE="${1}/.claude-hook-ran"
+echo "$(date): Hook executed" > "$MARKER_FILE"
+echo "=== HOOK EXECUTED ===" >&2
+echo "Worktree: $1" >&2
+echo "Marker created: $MARKER_FILE" >&2
+exit 0

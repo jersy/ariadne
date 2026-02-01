@@ -127,6 +127,56 @@ mypy ariadne_core/
 
 ---
 
+## Git Worktree 开发
+
+### Claude Settings 自动同步
+
+项目使用 Git `post-worktree` 钩子自动同步 Claude Code 的 LLM API 配置到新 worktree。
+
+**一次性设置：**
+```bash
+# 运行设置脚本
+./scripts/setup-claude-settings.sh
+```
+
+设置脚本会：
+1. 创建 `~/.claude-template/settings.json` 模板
+2. 创建 `.githooks/post-worktree` 钩子
+3. 配置 `git config core.hooksPath .githooks`
+
+**使用方法：**
+```bash
+# 新建 worktree 会自动获得配置
+git worktree add ../feature-x -b feature/x
+
+# 查看现有 worktree
+git worktree list
+
+# 手动同步现有 worktree
+cp ~/.claude-template/settings.json <worktree-path>/.claude/
+```
+
+**故障排查：**
+- **问题**: 新 worktree 没有 settings.json
+  - **解决**: 检查模板是否存在 `ls ~/.claude-template/settings.json`
+  - 重新运行设置脚本
+
+- **问题**: JSON 验证失败
+  - **解决**: 检查模板 JSON 格式 `jq empty ~/.claude-template/settings.json`
+  - 从当前配置重建 `cp .claude/settings.json ~/.claude-template/settings.json`
+
+- **问题**: 钩子未执行
+  - **解决**: 检查 Git 钩子配置 `git config core.hooksPath`
+  - 应该返回 `.githooks`
+
+**平台兼容性：**
+- ✅ macOS (Darwin)
+- ✅ Linux
+- ✅ Windows Git Bash
+- ✅ WSL (Windows Subsystem for Linux)
+
+---
+
 ## 重要提醒
 
 ⚠️ **这是一个本地开发工具，不是生产 SaaS 产品。**
