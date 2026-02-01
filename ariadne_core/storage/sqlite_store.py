@@ -485,24 +485,6 @@ class SQLiteStore:
         )
         self.conn.commit()
 
-    def mark_summaries_stale_by_file(self, file_path: str) -> int:
-        """Mark all summaries for symbols in a file as stale.
-
-        Args:
-            file_path: File path to mark stale
-
-        Returns:
-            Number of summaries marked stale
-        """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """UPDATE summaries SET is_stale = 1
-               WHERE target_fqn IN (SELECT fqn FROM symbols WHERE file_path = ?)""",
-            (file_path,),
-        )
-        self.conn.commit()
-        return cursor.rowcount
-
     def get_stale_summaries(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Get summaries marked as stale.
 

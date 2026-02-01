@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS entry_points (
     http_path TEXT,
     cron_expression TEXT,
     mq_queue TEXT,
-    FOREIGN KEY (symbol_fqn) REFERENCES symbols(fqn)
+    FOREIGN KEY (symbol_fqn) REFERENCES symbols(fqn) ON DELETE CASCADE
 );
 
 -- External dependencies (Redis, MySQL, MQ, RPC)
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS external_dependencies (
     dependency_type TEXT NOT NULL,
     target TEXT,
     strength TEXT DEFAULT 'strong',
-    FOREIGN KEY (caller_fqn) REFERENCES symbols(fqn)
+    FOREIGN KEY (caller_fqn) REFERENCES symbols(fqn) ON DELETE CASCADE
 );
 
 -- Anti-pattern detection results

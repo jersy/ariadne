@@ -155,21 +155,31 @@ class Embedder:
         embeddings = self._call_embedding_api([text])
         return embeddings[0]
 
-    def embed_texts(self, texts: list[str], batch_size: int = 100) -> list[list[float]]:
+    def embed_texts(
+        self, texts: list[str], batch_size: int = 100, max_texts: int = 100000
+    ) -> list[list[float]]:
         """Generate embeddings for multiple texts.
 
         Args:
             texts: List of texts to embed
             batch_size: Number of texts per API call
+            max_texts: Maximum number of texts to process (prevents OOM)
 
         Returns:
             List of embedding vectors
 
         Raises:
-            ValueError: If any text is empty or contains only whitespace
+            ValueError: If any text is empty or exceeds max_texts limit
         """
         if not texts:
             return []
+
+        # Validate text count limit to prevent unbounded memory growth
+        if len(texts) > max_texts:
+            raise ValueError(
+                f"Too many texts ({len(texts)}). Maximum is {max_texts}. "
+                "Process in smaller chunks or increase max_texts parameter."
+            )
 
         # Validate no empty texts
         empty_indices = [i for i, t in enumerate(texts) if not t or not t.strip()]

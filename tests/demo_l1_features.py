@@ -56,7 +56,7 @@ def demo_llm_summarization():
     print("=" * 60)
 
     config = LLMConfig.from_env()
-    client = create_llm_client(config)
+    with create_llm_client(config) as client:
 
     # Example Java code
     codes = [
@@ -103,14 +103,14 @@ public Order createOrder(OrderRequest request) {
         },
     ]
 
-    for item in codes:
-        print(f"\n代码: {item['name']}")
-        print("-" * 40)
-        summary = client.generate_summary(
-            item["code"],
-            context={"class_name": item["name"].split(".")[0], "method_name": item["name"].split(".")[-1]},
-        )
-        print(f"摘要: {summary}")
+        for item in codes:
+            print(f"\n代码: {item['name']}")
+            print("-" * 40)
+            summary = client.generate_summary(
+                item["code"],
+                context={"class_name": item["name"].split(".")[0], "method_name": item["name"].split(".")[-1]},
+            )
+            print(f"摘要: {summary}")
 
 
 def demo_hierarchical_summarization():
@@ -120,38 +120,38 @@ def demo_hierarchical_summarization():
     print("=" * 60)
 
     config = LLMConfig.from_env()
-    summarizer = HierarchicalSummarizer(config)
+    with HierarchicalSummarizer(config) as summarizer:
 
-    # Simulate a class with multiple methods
-    class_name = "UserService"
-    methods = [
-        ("login", "boolean login(String, String)", "验证用户登录凭证"),
-        ("register", "void register(UserRegistrationDto)", "注册新用户"),
-        ("updateProfile", "void updateProfile(Long, UserProfile)", "更新用户资料"),
-        ("changePassword", "void changePassword(Long, String, String)", "修改用户密码"),
-        ("resetPassword", "void resetPassword(String)", "重置用户密码"),
-    ]
+        # Simulate a class with multiple methods
+        class_name = "UserService"
+        methods = [
+            ("login", "boolean login(String, String)", "验证用户登录凭证"),
+            ("register", "void register(UserRegistrationDto)", "注册新用户"),
+            ("updateProfile", "void updateProfile(Long, UserProfile)", "更新用户资料"),
+            ("changePassword", "void changePassword(Long, String, String)", "修改用户密码"),
+            ("resetPassword", "void resetPassword(String)", "重置用户密码"),
+        ]
 
-    print(f"\n类: {class_name}")
-    print("-" * 40)
+        print(f"\n类: {class_name}")
+        print("-" * 40)
 
-    # Generate class summary from method summaries
-    method_summaries = [(name, summary) for name, _, summary in methods]
-    class_summary = summarizer.summarize_class(
-        SymbolData(
-            fqn="com.example.UserService",
-            kind=SymbolKind.CLASS,
-            name=class_name,
-            annotations=["Service"],
-        ),
-        method_summaries,
-        "Service",
-    )
+        # Generate class summary from method summaries
+        method_summaries = [(name, summary) for name, _, summary in methods]
+        class_summary = summarizer.summarize_class(
+            SymbolData(
+                fqn="com.example.UserService",
+                kind=SymbolKind.CLASS,
+                name=class_name,
+                annotations=["Service"],
+            ),
+            method_summaries,
+            "Service",
+        )
 
-    print(f"方法列表:")
-    for name, _, summary in methods:
-        print(f"  - {name}: {summary}")
-    print(f"\n类摘要: {class_summary}")
+        print(f"方法列表:")
+        for name, _, summary in methods:
+            print(f"  - {name}: {summary}")
+        print(f"\n类摘要: {class_summary}")
 
 
 def demo_semantic_search():
@@ -168,49 +168,49 @@ def demo_semantic_search():
         embedding_model="BAAI/bge-m3",
     )
 
-    embedder = create_embedder(config)
+    with create_embedder(config) as embedder:
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store = ChromaVectorStore(tmpdir)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ChromaVectorStore(tmpdir)
 
-        # Add sample summaries to vector store
-        summaries = [
-            ("user_service", "用户服务：处理用户注册、登录、资料管理等功能", "class"),
-            ("order_service", "订单服务：处理订单创建、支付、发货等流程", "class"),
-            ("auth_service", "认证服务：处理用户认证和授权", "class"),
-            ("inventory_service", "库存服务：管理商品库存和出入库", "class"),
-            ("payment_service", "支付服务：处理订单支付和退款", "class"),
-        ]
+            # Add sample summaries to vector store
+            summaries = [
+                ("user_service", "用户服务：处理用户注册、登录、资料管理等功能", "class"),
+                ("order_service", "订单服务：处理订单创建、支付、发货等流程", "class"),
+                ("auth_service", "认证服务：处理用户认证和授权", "class"),
+                ("inventory_service", "库存服务：管理商品库存和出入库", "class"),
+                ("payment_service", "支付服务：处理订单支付和退款", "class"),
+            ]
 
-        print("\n存储的业务摘要:")
-        for fqn, text, level in summaries:
-            # Generate embedding
-            embedding = embedder.embed_text(text)
-            # Store in vector DB
-            store.add_summary(fqn, text, embedding, {"fqn": fqn, "level": level})
-            print(f"  - {fqn}: {text}")
+            print("\n存储的业务摘要:")
+            for fqn, text, level in summaries:
+                # Generate embedding
+                embedding = embedder.embed_text(text)
+                # Store in vector DB
+                store.add_summary(fqn, text, embedding, {"fqn": fqn, "level": level})
+                print(f"  - {fqn}: {text}")
 
-        # Test semantic search
-        queries = [
-            "用户登录",
-            "订单处理",
-            "商品库存",
-            "验证码",
-        ]
+            # Test semantic search
+            queries = [
+                "用户登录",
+                "订单处理",
+                "商品库存",
+                "验证码",
+            ]
 
-        print("\n语义搜索测试:")
-        for query in queries:
-            query_embedding = embedder.embed_text(query)
-            results = store.search_summaries(query_embedding, n_results=3)
+            print("\n语义搜索测试:")
+            for query in queries:
+                query_embedding = embedder.embed_text(query)
+                results = store.search_summaries(query_embedding, n_results=3)
 
-            print(f"\n查询: '{query}'")
-            print("  相关结果:")
-            if results["ids"] and results["ids"][0]:
-                for i, (fqn, doc, dist) in enumerate(
-                    zip(results["ids"][0], results["documents"][0], results["distances"][0]), 1
-                ):
-                    similarity = 1 - dist
-                    print(f"    {i}. {fqn}: {doc} (相似度: {similarity:.2f})")
+                print(f"\n查询: '{query}'")
+                print("  相关结果:")
+                if results["ids"] and results["ids"][0]:
+                    for i, (fqn, doc, dist) in enumerate(
+                        zip(results["ids"][0], results["documents"][0], results["distances"][0]), 1
+                    ):
+                        similarity = 1 - dist
+                        print(f"    {i}. {fqn}: {doc} (相似度: {similarity:.2f})")
 
 
 def demo_persistence():
