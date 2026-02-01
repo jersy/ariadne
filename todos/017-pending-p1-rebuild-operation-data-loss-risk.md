@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p1
 issue_id: "017"
 tags:
@@ -309,6 +309,9 @@ def _verify_index(self, store: SQLiteStore) -> bool:
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-02 | Plan review completed | Critical rebuild safety issue identified |
+| 2026-02-02 | ShadowRebuilder implemented | Atomic swap with backup preservation |
+| 2026-02-02 | Tests added | 13 shadow rebuild tests passing |
+| 2026-02-02 | Committed | fix(storage): P1 data consistency - cascade deletes and shadow rebuild |
 | | | |
 
 ## Resources

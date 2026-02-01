@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p1
 issue_id: "018"
 tags:
@@ -333,6 +333,9 @@ WHERE s.fqn IS NULL;
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-02 | Plan review completed | Missing cascade deletes identified |
+| 2026-02-02 | Migration system created | Migration 001 with cascade delete triggers |
+| 2026-02-02 | Tests added | 24 tests pass (11 cascade + 13 shadow rebuild) |
+| 2026-02-02 | Committed | fix(storage): P1 data consistency - cascade deletes and shadow rebuild |
 | | | |
 
 ## Resources
