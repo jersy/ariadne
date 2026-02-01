@@ -315,6 +315,9 @@ class IncrementalSummarizerCoordinator:
             }
         )
 
+        # Get thread-safe snapshot of parallel stats
+        parallel_stats = self.parallel.get_stats()
+
         return IncrementalResult(
             regenerated_count=len(summaries),
             skipped_cached=skipped_count,
@@ -324,8 +327,8 @@ class IncrementalSummarizerCoordinator:
                 "changed": len(changed_fqns),
                 "dependents": len(affected.dependents),
                 "total_affected": affected.total,
-                "success": self.parallel.stats["success"],
-                "failed": self.parallel.stats["failed"],
+                "success": parallel_stats["success"],
+                "failed": parallel_stats["failed"],
             },
             dependency_analysis_time=dep_time,
             symbol_load_time=load_time,
