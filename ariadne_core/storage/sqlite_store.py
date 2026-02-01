@@ -20,6 +20,7 @@ from ariadne_core.models.types import (
     SymbolData,
 )
 from ariadne_core.storage.schema import ALL_SCHEMAS
+from ariadne_core.storage import migrations  # type: ignore
 
 
 class SQLiteStore:
@@ -69,11 +70,69 @@ class SQLiteStore:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist and run migrations."""
         cursor = self.conn.cursor()
         for schema_sql in ALL_SCHEMAS.values():
             cursor.executescript(schema_sql)
         self.conn.commit()
+
+        # Run pending migrations
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        """Run pending database migrations."""
+        # Get applied migrations
+        cursor = self.conn.cursor()
+
+        # Create migrations table if it doesn't exist
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS _migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Get applied migrations
+        cursor.execute("SELECT version FROM _migrations ORDER BY version")
+        applied = {row[0] for row in cursor.fetchall()}
+
+        # Run pending migrations
+        for migration in migrations.ALL_MIGRATIONS:
+            if migration["version"] not in applied:
+                logger.info(
+                    f"Running migration {migration['version']}: {migration['name']}",
+                    extra={
+                        "event": "migration_start",
+                        "version": migration["version"],
+                        "name": migration["name"],
+                    }
+                )
+                try:
+                    migration["upgrade"](self.conn)
+                    # Record migration
+                    cursor.execute(
+                        "INSERT INTO _migrations (version) VALUES (?)",
+                        (migration["version"],)
+                    )
+                    self.conn.commit()
+                    logger.info(
+                        f"Migration {migration['version']} completed",
+                        extra={
+                            "event": "migration_complete",
+                            "version": migration["version"],
+                        }
+                    )
+                except Exception as e:
+                    self.conn.rollback()
+                    logger.error(
+                        f"Migration {migration['version']} failed: {e}",
+                        extra={
+                            "event": "migration_failed",
+                            "version": migration["version"],
+                            "error": str(e),
+                        }
+                    )
+                    raise
 
     # ========================
     # Symbol CRUD
