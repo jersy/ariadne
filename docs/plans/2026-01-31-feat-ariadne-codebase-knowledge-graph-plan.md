@@ -158,22 +158,22 @@ ariadne/
 
 **任务清单**：
 
-- [ ] **1.1 项目初始化**
+- [x] **1.1 项目初始化**
   - 创建 `pyproject.toml` (Poetry/uv)
   - 配置 pytest、ruff、mypy
   - 创建目录结构
 
-- [ ] **1.2 ASM 服务集成**
+- [x] **1.2 ASM 服务集成**
   - 从 CallGraph 复制/简化 `asm-analysis-service/`
   - 实现 `ariadne_core/extractors/asm/client.py`
   - 验证字节码分析工作
 
-- [ ] **1.3 SQLite 存储层**
+- [x] **1.3 SQLite 存储层**
   - 设计 Schema（见下方详细设计）
   - 实现 `sqlite_store.py`
   - 支持符号索引 CRUD
 
-- [ ] **1.4 符号提取器**
+- [x] **1.4 符号提取器**
   - 实现 Class/Interface/Method/Field 提取
   - 构建 Inherits/Implements/Calls 关系
   - 支持增量更新（基于文件 hash）
