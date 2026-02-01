@@ -31,7 +31,7 @@ class IncrementalResult:
         skipped_cached: Number of summaries skipped (cached and not stale)
         duration_seconds: Time taken for the operation
         cost_report: LLM cost report string
-        stats: Detailed statistics
+        stats: Detailed statistics including performance metrics
     """
 
     regenerated_count: int
@@ -39,6 +39,13 @@ class IncrementalResult:
     duration_seconds: float = 0.0
     cost_report: str = ""
     stats: dict[str, Any] = field(default_factory=dict)
+
+    # Performance metrics
+    dependency_analysis_time: float = 0.0
+    symbol_load_time: float = 0.0
+    summarization_time: float = 0.0
+    database_update_time: float = 0.0
+    throughput_per_second: float = 0.0
 
 
 class IncrementalSummarizerCoordinator:
@@ -94,11 +101,30 @@ class IncrementalSummarizerCoordinator:
         else:
             changed_fqns = changed_symbols  # type: ignore
 
+        logger.info(
+            f"Starting incremental update",
+            extra={
+                "event": "incremental_update_start",
+                "changed_count": len(changed_fqns),
+                "max_workers": self.parallel.max_workers,
+            }
+        )
+
         # 1. Get affected symbols
+        dep_start = time.time()
         affected = self.tracker.get_affected_symbols(changed_fqns)
+        dep_time = time.time() - dep_start
+
         logger.info(
             f"Incremental update: {affected.total} symbols to regenerate "
-            f"({len(changed_fqns)} changed + {len(affected.dependents)} dependents)"
+            f"({len(changed_fqns)} changed + {len(affected.dependents)} dependents)",
+            extra={
+                "event": "dependency_analysis_complete",
+                "total_affected": affected.total,
+                "changed": len(changed_fqns),
+                "dependents": len(affected.dependents),
+                "dependency_analysis_time": f"{dep_time:.2f}s",
+            }
         )
 
         # 2. Load symbol data for affected symbols
@@ -106,9 +132,18 @@ class IncrementalSummarizerCoordinator:
 
         # Batch fetch: Get all symbols in one query
         if not affected.total_set:
+            duration = time.time() - start_time
+            logger.info(
+                f"No symbols to process",
+                extra={
+                    "event": "incremental_update_complete",
+                    "duration": f"{duration:.2f}s",
+                    "regenerated": 0,
+                }
+            )
             return IncrementalResult(
                 regenerated_count=0,
-                duration_seconds=time.time() - start_time,
+                duration_seconds=duration,
                 cost_report=self.cost_tracker.get_report(),
                 stats={
                     "changed": len(changed_fqns),
@@ -117,6 +152,7 @@ class IncrementalSummarizerCoordinator:
                 },
             )
 
+        load_start = time.time()
         placeholders = ",".join("?" * len(affected.total_set))
         cursor = self.store.conn.cursor()
         symbol_dicts = cursor.execute(
@@ -163,11 +199,22 @@ class IncrementalSummarizerCoordinator:
 
             symbols_data.append((symbol, source_code))
 
+        load_time = time.time() - load_start
+
         # 3. Filter out cached non-stale summaries
         if not symbols_data:
+            duration = time.time() - start_time
+            logger.info(
+                f"No valid symbols with source code",
+                extra={
+                    "event": "incremental_update_complete",
+                    "duration": f"{duration:.2f}s",
+                    "regenerated": 0,
+                }
+            )
             return IncrementalResult(
                 regenerated_count=0,
-                duration_seconds=time.time() - start_time,
+                duration_seconds=duration,
                 cost_report=self.cost_tracker.get_report(),
             )
 
@@ -191,12 +238,35 @@ class IncrementalSummarizerCoordinator:
                     continue
                 filtered_symbols.append((symbol, source_code))
 
+        logger.info(
+            f"Filtered {len(filtered_symbols)} symbols to process, "
+            f"{skipped_count} cached",
+            extra={
+                "event": "cache_filter_complete",
+                "to_process": len(filtered_symbols),
+                "cached": skipped_count,
+            }
+        )
+
         # 4. Parallel summarization
+        sum_start = time.time()
         summaries = self.parallel.summarize_symbols_batch(
             filtered_symbols, show_progress=show_progress
         )
+        sum_time = time.time() - sum_start
+
+        logger.info(
+            f"Generated {len(summaries)} summaries in {sum_time:.2f}s",
+            extra={
+                "event": "summarization_complete",
+                "generated": len(summaries),
+                "summarization_time": f"{sum_time:.2f}s",
+                "throughput": f"{len(summaries) / sum_time:.1f} summaries/sec",
+            }
+        )
 
         # 5. Batch update database
+        db_start = time.time()
         for fqn, summary_text in summaries.items():
             from ariadne_core.models.types import SummaryData, SummaryLevel
 
@@ -224,7 +294,26 @@ class IncrementalSummarizerCoordinator:
                 )
                 self.store.create_summary(summary)
 
+        db_time = time.time() - db_start
+
         duration = time.time() - start_time
+        throughput = len(summaries) / duration if duration > 0 else 0
+
+        logger.info(
+            f"Incremental update complete: {len(summaries)} regenerated, "
+            f"{skipped_count} cached, {duration:.2f}s total",
+            extra={
+                "event": "incremental_update_complete",
+                "regenerated": len(summaries),
+                "cached": skipped_count,
+                "duration": f"{duration:.2f}s",
+                "throughput": f"{throughput:.1f} summaries/sec",
+                "dependency_time": f"{dep_time:.2f}s",
+                "load_time": f"{load_time:.2f}s",
+                "summarization_time": f"{sum_time:.2f}s",
+                "db_time": f"{db_time:.2f}s",
+            }
+        )
 
         return IncrementalResult(
             regenerated_count=len(summaries),
@@ -238,6 +327,11 @@ class IncrementalSummarizerCoordinator:
                 "success": self.parallel.stats["success"],
                 "failed": self.parallel.stats["failed"],
             },
+            dependency_analysis_time=dep_time,
+            symbol_load_time=load_time,
+            summarization_time=sum_time,
+            database_update_time=db_time,
+            throughput_per_second=throughput,
         )
 
     def close(self) -> None:
