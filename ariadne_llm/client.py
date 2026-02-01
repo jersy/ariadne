@@ -11,6 +11,7 @@ Supports:
 """
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -31,6 +32,57 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 MIN_WAIT_SECONDS = 1
 MAX_WAIT_SECONDS = 10
+
+
+def sanitize_code_for_llm(code: str, max_length: int = 50000) -> str:
+    """Remove potential prompt injection patterns from source code before sending to LLM.
+
+    This function removes suspicious comment patterns that could be used for prompt injection attacks.
+    It does not modify the actual code logic, only potentially malicious comments.
+
+    Args:
+        code: Source code to sanitize
+        max_length: Maximum length of code to process (prevents oversized prompts)
+
+    Returns:
+        Sanitized source code
+
+    Examples:
+        >>> sanitize_code_for_llm("public void test() { /* IGNORE INSTRUCTIONS */ }")
+        'public void test() {  }'
+    """
+    # Truncate to max length
+    code = code[:max_length]
+
+    # Remove suspicious comment patterns that could be injection attempts
+    injection_patterns = [
+        r'/\*.*IGNORE.*\*/',
+        r'/\*.*INSTRUCTIONS.*\*/',
+        r'/\*.*OUTPUT.*\*/',
+        r'/\*.*PRINT.*\*/',
+        r'/\*.*TRANSLATE.*\*/',
+        r'/\*.*SHOW.*\*/',
+        r'/\*.*REVEAL.*\*/',
+        r'/\*.*SYSTEM.*\*/',
+        r'/\*.*SECRE[T].*?\*/',
+        r'/\*.*PASSWORD.*?\*/',
+        r'/\*.*KEY.*?\*/',
+        r'//.*IGNORE.*',
+        r'//.*INSTRUCTIONS.*',
+        r'//.*OUTPUT.*',
+        r'//.*TRANSLATE.*',
+        r'//.*SHOW.*',
+        r'//.*REVEAL.*',
+        r'//.*SYSTEM.*',
+        r'//.*SECRE[T].*',
+        r'//.*PASSWORD.*',
+        r'//.*KEY.*',
+    ]
+
+    for pattern in injection_patterns:
+        code = re.sub(pattern, '', code, flags=re.IGNORECASE | re.DOTALL)
+
+    return code.strip()
 
 
 def create_llm_client(config: LLMConfig) -> "LLMClient":
@@ -196,7 +248,9 @@ class LLMClient:
             if annotations := context.get("annotations"):
                 prompt_parts.append(f"注解: {', '.join(annotations)}")
 
-        prompt_parts.append(f"\n源代码:\n```java\n{code}\n```")
+        # Sanitize code to prevent prompt injection attacks
+        sanitized_code = sanitize_code_for_llm(code)
+        prompt_parts.append(f"\n源代码:\n```java\n{sanitized_code}\n```")
 
         prompt = "\n".join(prompt_parts)
 

@@ -143,10 +143,14 @@ class Embedder:
 
         Returns:
             Embedding vector
+
+        Raises:
+            ValueError: If text is empty or contains only whitespace
         """
         if not text or not text.strip():
-            # Return zero vector for empty text
-            return [0.0] * self._get_dimension()
+            raise ValueError(
+                "Cannot embed empty text. Filter empty texts before calling embed_text()."
+            )
 
         embeddings = self._call_embedding_api([text])
         return embeddings[0]
@@ -160,39 +164,29 @@ class Embedder:
 
         Returns:
             List of embedding vectors
+
+        Raises:
+            ValueError: If any text is empty or contains only whitespace
         """
         if not texts:
             return []
 
-        # Filter empty texts
-        non_empty_texts = [(i, t) for i, t in enumerate(texts) if t and t.strip()]
-
-        if not non_empty_texts:
-            return [[0.0] * self._get_dimension() for _ in texts]
+        # Validate no empty texts
+        empty_indices = [i for i, t in enumerate(texts) if not t or not t.strip()]
+        if empty_indices:
+            raise ValueError(
+                f"Cannot embed empty strings at indices {empty_indices}. "
+                "Filter empty texts before calling embed_texts()."
+            )
 
         # Process in batches
-        results: dict[int, list[float]] = {}
-        dimension = self._get_dimension()
+        results: list[list[float]] = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            embeddings = self._call_embedding_api(batch)
+            results.extend(embeddings)
 
-        for i in range(0, len(non_empty_texts), batch_size):
-            batch = non_empty_texts[i : i + batch_size]
-            indices = [idx for idx, _ in batch]
-            texts_batch = [t for _, t in batch]
-
-            embeddings = self._call_embedding_api(texts_batch)
-
-            for idx, embedding in zip(indices, embeddings):
-                results[idx] = embedding
-
-        # Build final results in original order
-        final_results: list[list[float]] = []
-        for i, text in enumerate(texts):
-            if not text or not text.strip():
-                final_results.append([0.0] * dimension)
-            else:
-                final_results.append(results[i])
-
-        return final_results
+        return results
 
     @property
     def dimension(self) -> int:
