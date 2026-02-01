@@ -22,8 +22,8 @@ class ControllerDaoRule(AntiPatternRule):
         return "controller-dao"
 
     @property
-    def severity(self) -> str:
-        return "error"
+    def severity(self) -> Severity:
+        return Severity.ERROR
 
     @property
     def description(self) -> str:

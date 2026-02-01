@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -202,3 +203,98 @@ class CallChainResult:
     def max_depth(self) -> int:
         """最大深度的别名。"""
         return self.depth
+
+
+# ========================
+# L1 Business Layer Types
+# ========================
+
+
+class SummaryLevel(str, Enum):
+    """摘要层级。"""
+
+    METHOD = "method"
+    CLASS = "class"
+    PACKAGE = "package"
+    MODULE = "module"
+
+
+class ConstraintType(str, Enum):
+    """业务约束类型。"""
+
+    VALIDATION = "validation"
+    BUSINESS_RULE = "business_rule"
+    INVARIANT = "invariant"
+
+
+@dataclass
+class SummaryData:
+    """业务摘要数据（L1 层）。"""
+
+    target_fqn: str
+    level: SummaryLevel
+    summary: str
+    vector_id: Optional[str] = None
+    is_stale: bool = False
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.target_fqn,
+            self.level.value,
+            self.summary,
+            self.vector_id,
+            self.is_stale,
+            self.created_at,
+            self.updated_at,
+        )
+
+
+@dataclass
+class GlossaryEntry:
+    """领域词汇表条目（L1 层）。"""
+
+    code_term: str
+    business_meaning: str
+    synonyms: list[str] = field(default_factory=list)
+    source_fqn: Optional[str] = None
+    vector_id: Optional[str] = None
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.code_term,
+            self.business_meaning,
+            json.dumps(self.synonyms) if self.synonyms else None,
+            self.source_fqn,
+            self.vector_id,
+            self.created_at,
+        )
+
+
+@dataclass
+class ConstraintEntry:
+    """业务约束条目（L1 层）。"""
+
+    name: str
+    description: str
+    source_fqn: Optional[str] = None
+    source_line: Optional[int] = None
+    constraint_type: ConstraintType = ConstraintType.BUSINESS_RULE
+    vector_id: Optional[str] = None
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.name,
+            self.description,
+            self.source_fqn,
+            self.source_line,
+            self.constraint_type.value,
+            self.vector_id,
+            self.created_at,
+        )
