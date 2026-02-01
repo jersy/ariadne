@@ -77,9 +77,11 @@ CREATE TABLE IF NOT EXISTS anti_patterns (
     rule_id TEXT NOT NULL,
     from_fqn TEXT NOT NULL,
     to_fqn TEXT,
-    severity TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK(severity IN ('error', 'warning', 'info')),
     message TEXT NOT NULL,
-    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (from_fqn) REFERENCES symbols(fqn) ON DELETE CASCADE,
+    FOREIGN KEY (to_fqn) REFERENCES symbols(fqn) ON DELETE SET NULL
 );
 """
 

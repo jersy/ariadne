@@ -100,6 +100,7 @@ class LLMClient:
         """Context manager exit - ensures cleanup."""
         self.close()
 
+    @staticmethod
     def _should_retry(exception: Exception) -> bool:
         """Check if exception should trigger a retry.
 
