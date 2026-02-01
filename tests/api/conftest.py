@@ -36,6 +36,10 @@ def api_client(temp_db_path):
     os.environ["ARIADNE_RATE_LIMIT_ENABLED"] = "false"  # Disable rate limiting in tests
     os.environ["ARIADNE_API_VERSION"] = "v1"  # Use consistent API version in tests
 
+    # Initialize the database with schema
+    from ariadne_core.storage.sqlite_store import SQLiteStore
+    SQLiteStore(temp_db_path, init=True)
+
     from ariadne_api.app import app
 
     client = TestClient(app)

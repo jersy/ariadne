@@ -14,6 +14,11 @@ from ariadne_api.schemas.constraints import (
     ConstraintEntry,
     ConstraintsResponse,
 )
+from ariadne_api.schemas.glossary import (
+    GlossarySearchResponse,
+    GlossaryTerm,
+    GlossaryTermList,
+)
 from ariadne_api.schemas.graph import (
     GraphEdge,
     GraphMetadata,
@@ -49,6 +54,9 @@ __all__ = [
     "CodeChange",
     "ConstraintEntry",
     "ConstraintsResponse",
+    "GlossarySearchResponse",
+    "GlossaryTerm",
+    "GlossaryTermList",
     "GraphEdge",
     "GraphMetadata",
     "GraphNode",

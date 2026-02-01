@@ -13,6 +13,7 @@ from ariadne_api.middleware import RequestContextMiddleware, TracingMiddleware, 
 from ariadne_api.rate_limiter import RateLimitConfig, RateLimitMiddleware, get_rate_limiter
 from ariadne_api.routes.check import router as check_router
 from ariadne_api.routes.constraints import router as constraints_router
+from ariadne_api.routes.glossary import router as glossary_router
 from ariadne_api.routes.graph import router as graph_router
 from ariadne_api.routes.health import router as health_router
 from ariadne_api.routes.impact import router as impact_router
@@ -106,6 +107,7 @@ app.include_router(rebuild_router, prefix=f"/api/{API_VERSION}", tags=["rebuild"
 app.include_router(jobs_router, prefix=f"/api/{API_VERSION}", tags=["jobs"])
 app.include_router(constraints_router, prefix=f"/api/{API_VERSION}", tags=["constraints"])
 app.include_router(check_router, prefix=f"/api/{API_VERSION}", tags=["check"])
+app.include_router(glossary_router, prefix=f"/api/{API_VERSION}/knowledge", tags=["glossary"])
 
 # Legacy unversioned endpoints for backward compatibility (deprecated)
 # TODO: Add deprecation warning headers
@@ -119,6 +121,7 @@ if _app_include_legacy:
     app.include_router(jobs_router, tags=["jobs (deprecated)"])
     app.include_router(constraints_router, tags=["constraints (deprecated)"])
     app.include_router(check_router, tags=["check (deprecated)"])
+    app.include_router(glossary_router, prefix="/api/knowledge", tags=["glossary (deprecated)"])
 
 
 @app.get("/", tags=["root"])

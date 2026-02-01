@@ -105,7 +105,7 @@ class SQLiteStore:
                     extra={
                         "event": "migration_start",
                         "version": migration["version"],
-                        "name": migration["name"],
+                        "migration_name": migration["name"],
                     }
                 )
                 try:
@@ -1305,3 +1305,66 @@ class SQLiteStore:
             LIMIT 100
         """)
         return [dict(row) for row in cursor.fetchall()]
+
+    # ========================
+    # Glossary Methods
+    # ========================
+
+    def get_glossary_terms(
+        self,
+        prefix: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Get glossary terms with optional prefix filtering.
+
+        Args:
+            prefix: Optional filter by code_term prefix (e.g., "Order")
+            limit: Maximum results to return (1-1000)
+            offset: Pagination offset
+
+        Returns:
+            List of glossary term dictionaries
+        """
+        limit = max(1, min(limit, 1000))
+        cursor = self.conn.cursor()
+
+        query = "SELECT * FROM glossary"
+        params = []
+
+        if prefix:
+            query += " WHERE code_term LIKE ?"
+            params.append(f"{prefix}%")
+
+        query += " ORDER BY code_term LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_glossary_term(self, code_term: str) -> dict[str, Any] | None:
+        """Get a specific glossary term by code_term.
+
+        Args:
+            code_term: The exact code term to look up
+
+        Returns:
+            Glossary term dictionary or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM glossary WHERE code_term = ?",
+            (code_term,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_glossary_term_count(self) -> int:
+        """Get the total count of glossary terms.
+
+        Returns:
+            Total number of glossary terms
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM glossary")
+        return cursor.fetchone()[0]
