@@ -7,7 +7,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from ariadne_core.models.types import EdgeData, SymbolData
+from ariadne_core.models.types import (
+    AntiPatternData,
+    EdgeData,
+    EntryPointData,
+    ExternalDependencyData,
+    SymbolData,
+)
 from ariadne_core.storage.schema import ALL_SCHEMAS
 
 
@@ -259,6 +265,136 @@ class SQLiteStore:
         cursor.execute(f"DELETE FROM symbols WHERE fqn IN ({placeholders})", fqns)
         self.conn.commit()
         return len(fqns)
+
+    # ========================
+    # L2: Entry Points
+    # ========================
+
+    def insert_entry_points(self, entries: list[EntryPointData]) -> int:
+        """Insert entry points. Returns count inserted."""
+        if not entries:
+            return 0
+        cursor = self.conn.cursor()
+        cursor.executemany(
+            """INSERT OR REPLACE INTO entry_points
+               (symbol_fqn, entry_type, http_method, http_path, cron_expression, mq_queue)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [e.to_row() for e in entries],
+        )
+        self.conn.commit()
+        return len(entries)
+
+    def get_entry_points(self, entry_type: str | None = None) -> list[dict[str, Any]]:
+        """Get entry points, optionally filtered by type."""
+        cursor = self.conn.cursor()
+        if entry_type:
+            cursor.execute("SELECT * FROM entry_points WHERE entry_type = ?", (entry_type,))
+        else:
+            cursor.execute("SELECT * FROM entry_points")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_entry_point_count(self) -> int:
+        """Get total entry point count."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM entry_points")
+        return cursor.fetchone()[0]
+
+    # ========================
+    # L2: External Dependencies
+    # ========================
+
+    def insert_external_dependencies(self, deps: list[ExternalDependencyData]) -> int:
+        """Insert external dependencies. Returns count inserted."""
+        if not deps:
+            return 0
+        cursor = self.conn.cursor()
+        cursor.executemany(
+            """INSERT INTO external_dependencies
+               (caller_fqn, dependency_type, target, strength)
+               VALUES (?, ?, ?, ?)""",
+            [d.to_row() for d in deps],
+        )
+        self.conn.commit()
+        return len(deps)
+
+    def get_external_dependencies(
+        self,
+        caller_fqn: str | None = None,
+        dependency_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get external dependencies with optional filters."""
+        cursor = self.conn.cursor()
+        if caller_fqn and dependency_type:
+            cursor.execute(
+                "SELECT * FROM external_dependencies WHERE caller_fqn = ? AND dependency_type = ?",
+                (caller_fqn, dependency_type),
+            )
+        elif caller_fqn:
+            cursor.execute(
+                "SELECT * FROM external_dependencies WHERE caller_fqn = ?",
+                (caller_fqn,),
+            )
+        elif dependency_type:
+            cursor.execute(
+                "SELECT * FROM external_dependencies WHERE dependency_type = ?",
+                (dependency_type,),
+            )
+        else:
+            cursor.execute("SELECT * FROM external_dependencies")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_external_dependency_count(self) -> int:
+        """Get total external dependency count."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM external_dependencies")
+        return cursor.fetchone()[0]
+
+    # ========================
+    # L2: Anti-Patterns
+    # ========================
+
+    def insert_anti_patterns(self, patterns: list[AntiPatternData]) -> int:
+        """Insert anti-pattern detection results. Returns count inserted."""
+        if not patterns:
+            return 0
+        cursor = self.conn.cursor()
+        cursor.executemany(
+            """INSERT INTO anti_patterns
+               (rule_id, from_fqn, to_fqn, severity, message)
+               VALUES (?, ?, ?, ?, ?)""",
+            [p.to_row() for p in patterns],
+        )
+        self.conn.commit()
+        return len(patterns)
+
+    def get_anti_patterns(
+        self,
+        rule_id: str | None = None,
+        severity: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get anti-patterns with optional filters."""
+        cursor = self.conn.cursor()
+        if rule_id and severity:
+            cursor.execute(
+                "SELECT * FROM anti_patterns WHERE rule_id = ? AND severity = ?",
+                (rule_id, severity),
+            )
+        elif rule_id:
+            cursor.execute("SELECT * FROM anti_patterns WHERE rule_id = ?", (rule_id,))
+        elif severity:
+            cursor.execute("SELECT * FROM anti_patterns WHERE severity = ?", (severity,))
+        else:
+            cursor.execute("SELECT * FROM anti_patterns")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def clear_anti_patterns(self) -> int:
+        """Clear all anti-patterns. Returns count deleted."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM anti_patterns")
+        count = cursor.fetchone()[0]
+        cursor.execute("DELETE FROM anti_patterns")
+        self.conn.commit()
+        return count
 
     def close(self) -> None:
         """Close the database connection."""
