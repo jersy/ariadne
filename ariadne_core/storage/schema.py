@@ -24,15 +24,13 @@ CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_fqn);
 
--- Relationship edges
+-- Relationship edges (no FK constraint - edges can reference external symbols)
 CREATE TABLE IF NOT EXISTS edges (
     id INTEGER PRIMARY KEY,
     from_fqn TEXT NOT NULL,
     to_fqn TEXT NOT NULL,
     relation TEXT NOT NULL,
-    metadata TEXT,
-    FOREIGN KEY (from_fqn) REFERENCES symbols(fqn),
-    FOREIGN KEY (to_fqn) REFERENCES symbols(fqn)
+    metadata TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_fqn);
