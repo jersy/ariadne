@@ -37,6 +37,12 @@ public class AnalysisService {
     @Value("${analysis.batch.size:1000}")
     private int analysisBatchSize;
 
+    @Value("${asm.allowed.directories:}")
+    private String allowedDirectoriesConfig;
+
+    // 缓存解析后的允许目录列表
+    private List<Path> allowedDirectories = null;
+
     // 性能监控指标
     private final AtomicInteger processedClasses = new AtomicInteger(0);
     private final AtomicInteger failedClasses = new AtomicInteger(0);
@@ -155,12 +161,15 @@ public class AnalysisService {
         List<String> explicitClassFiles = (List<String>) request.get("classFiles");
 
         for (String classFilePath : explicitClassFiles) {
-            String normalizedPath = normalizePath(classFilePath);
-            Path path = Paths.get(normalizedPath);
-            if (Files.exists(path) && normalizedPath.endsWith(".class")) {
-                result.addClassFile(path);
-            } else {
-                logger.warn("Warning: invalid class file: {}", normalizedPath);
+            try {
+                Path path = validateAndNormalizePath(classFilePath);
+                if (Files.exists(path) && path.toString().endsWith(".class")) {
+                    result.addClassFile(path);
+                } else {
+                    logger.warn("Warning: invalid class file: {}", path);
+                }
+            } catch (SecurityException e) {
+                logger.warn("Skipping file due to security restriction: {}", classFilePath);
             }
         }
 
@@ -937,6 +946,56 @@ public class AnalysisService {
      */
     private String normalizePath(String path) {
         return path.replace('\\', '/');
+    }
+
+    /**
+     * 验证路径是否在允许的目录列表中（防止路径遍历攻击）
+     *
+     * @param path 要验证的路径
+     * @throws SecurityException 如果路径不在允许的目录中
+     */
+    private void validatePathSecurity(Path path) {
+        // 如果没有配置允许目录，则允许所有路径（开发模式）
+        if (allowedDirectoriesConfig == null || allowedDirectoriesConfig.trim().isEmpty()) {
+            return;
+        }
+
+        // 延迟初始化允许目录列表
+        if (allowedDirectories == null) {
+            allowedDirectories = Arrays.stream(allowedDirectoriesConfig.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .map(Paths::get)
+                    .map(Path::toAbsolutePath)
+                    .map(Path::normalize)
+                    .collect(Collectors.toList());
+        }
+
+        // 如果解析后为空，允许所有路径
+        if (allowedDirectories.isEmpty()) {
+            return;
+        }
+
+        // 规范化并验证路径
+        Path normalizedPath = path.toAbsolutePath().normalize();
+
+        // 检查是否在允许的目录中
+        boolean isAllowed = allowedDirectories.stream()
+                .anyMatch(allowedDir -> normalizedPath.startsWith(allowedDir));
+
+        if (!isAllowed) {
+            logger.warn("Path security violation: {} is not under allowed directories", normalizedPath);
+            throw new SecurityException("Access denied: path is outside allowed directories");
+        }
+    }
+
+    /**
+     * 验证并规范化文件路径
+     */
+    private Path validateAndNormalizePath(String pathStr) {
+        Path path = Paths.get(normalizePath(pathStr)).toAbsolutePath().normalize();
+        validatePathSecurity(path);
+        return path;
     }
 
     /**

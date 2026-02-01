@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationContext;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -33,6 +34,9 @@ public class AnalysisController {
 
     private final AnalysisService analysisService;
     private final ApplicationContext applicationContext;
+
+    @Value("${asm.shutdown.token:}")
+    private String shutdownToken;
 
     @Autowired
     public AnalysisController(AnalysisService analysisService, ApplicationContext applicationContext) {
@@ -228,11 +232,20 @@ public class AnalysisController {
     /**
      * Shutdown endpoint (for compatibility with original service)
      * POST /shutdown
-     *
-     * Note: In production, consider using Spring Boot Actuator's shutdown endpoint instead.
+     * Requires X-Shutdown-Token header if asm.shutdown.token is configured.
      */
     @PostMapping("/shutdown")
-    public ResponseEntity<String> shutdown() {
+    public ResponseEntity<String> shutdown(@RequestHeader(value = "X-Shutdown-Token", required = false) String token) {
+        // 验证 shutdown token（如果配置了）
+        if (shutdownToken != null && !shutdownToken.isEmpty()) {
+            if (token == null || !shutdownToken.equals(token)) {
+                logger.warn("Shutdown request rejected: invalid or missing token");
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\": \"Invalid or missing shutdown token\"}");
+            }
+        }
+
         logger.info("Shutdown request received, stopping service...");
 
         // Return response immediately

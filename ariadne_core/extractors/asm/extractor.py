@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import os
 from pathlib import Path
 from typing import Any
 
 from ariadne_core.extractors.asm.client import ASMClient
 from ariadne_core.models.types import EdgeData, ExtractionResult, RelationKind, SymbolData, SymbolKind
 from ariadne_core.storage.sqlite_store import SQLiteStore
+
+# 外部库前缀 - 这些包不会被索引到调用边中
+EXTERNAL_PREFIXES = (
+    "java.", "javax.", "jdk.", "sun.", "com.sun.",
+    "org.w3c.", "org.xml.", "org.omg.", "org.ietf.",
+    "org.slf4j.", "org.apache.", "org.springframework.",
+    "com.fasterxml.", "com.google.", "org.hibernate.",
+)
 
 
 class Extractor:
@@ -28,6 +36,7 @@ class Extractor:
         self.db_path = db_path
         self.store = SQLiteStore(db_path, init=init)
         self.asm_client = ASMClient(service_url)
+        self._source_index: dict[str, Path] | None = None
 
     def extract_project(
         self,
@@ -35,16 +44,7 @@ class Extractor:
         domains: list[str] | None = None,
         limit: int | None = None,
     ) -> ExtractionResult:
-        """Extract symbols and relationships from a Java project.
-
-        Args:
-            project_root: Path to the project root directory.
-            domains: Optional filter for Java package domains (e.g., ["com.example"]).
-            limit: Optional limit on class files per module (for testing).
-
-        Returns:
-            ExtractionResult with stats and any errors.
-        """
+        """Extract symbols and relationships from a Java project."""
         project_path = Path(project_root).resolve()
         if not project_path.exists():
             return ExtractionResult(success=False, errors=[f"Project not found: {project_root}"])
@@ -53,7 +53,6 @@ class Extractor:
         if domains:
             print(f"[Ariadne] Domain filter: {', '.join(domains)}")
 
-        # Find class directories (Maven or Gradle)
         class_dirs = self._find_class_dirs(project_path)
         if not class_dirs:
             return ExtractionResult(
@@ -63,67 +62,28 @@ class Extractor:
 
         print(f"[Ariadne] Found {len(class_dirs)} module(s)")
 
+        # 构建源文件索引（一次性扫描）
+        self._source_index = self._build_source_index(project_path)
+        print(f"[Ariadne] Source index: {len(self._source_index)} files")
+
         total_symbols = 0
         total_edges = 0
-        all_symbols: list[SymbolData] = []
-        all_edges: list[EdgeData] = []
         errors: list[str] = []
 
         for classes_dir, module_name in class_dirs:
-            print(f"[Ariadne] Processing module: {module_name}")
-
-            # Check if module needs re-extraction
-            if not self._needs_reindex(module_name, classes_dir):
-                print(f"[Ariadne]   -> Skipped (unchanged)")
-                continue
-
-            # Find class files
-            class_files = self._find_class_files(classes_dir, limit)
-            if not class_files:
-                print(f"[Ariadne]   -> No class files found")
-                continue
-
-            print(f"[Ariadne]   -> Analyzing {len(class_files)} class files...")
-
-            try:
-                # Call ASM service
-                result = self.asm_client.analyze_classes(
-                    class_files=[str(f) for f in class_files],
-                    domains=domains,
-                )
-
-                if not result.get("success"):
-                    errors.append(f"ASM analysis failed for {module_name}")
-                    continue
-
-                # Process classes
-                classes = result.get("classes", [])
-                symbols, edges = self._process_classes(classes, module_name, project_path)
-                all_symbols.extend(symbols)
-                all_edges.extend(edges)
-
-                # Store incrementally
-                self.store.insert_symbols(symbols)
-                self.store.insert_edges(edges)
-
-                # Update metadata hash
-                content_hash = self._compute_hash(classes_dir)
-                self.store.set_metadata(f"hash:{module_name}", content_hash)
-
-                print(f"[Ariadne]   -> {len(symbols)} symbols, {len(edges)} edges")
-                total_symbols += len(symbols)
-                total_edges += len(edges)
-
-            except Exception as e:
-                errors.append(f"Error processing {module_name}: {e}")
-                print(f"[Ariadne]   -> ERROR: {e}")
+            result = self._process_module(
+                classes_dir, module_name, project_path, domains, limit
+            )
+            if result["error"]:
+                errors.append(result["error"])
+            else:
+                total_symbols += result["symbols"]
+                total_edges += result["edges"]
 
         print(f"[Ariadne] Extraction complete: {total_symbols} symbols, {total_edges} edges")
 
         return ExtractionResult(
             success=len(errors) == 0,
-            symbols=all_symbols,
-            edges=all_edges,
             stats={
                 "total_symbols": total_symbols,
                 "total_edges": total_edges,
@@ -131,6 +91,80 @@ class Extractor:
             },
             errors=errors,
         )
+
+    def _process_module(
+        self,
+        classes_dir: Path,
+        module_name: str,
+        project_path: Path,
+        domains: list[str] | None,
+        limit: int | None,
+    ) -> dict[str, Any]:
+        """处理单个模块的提取。"""
+        print(f"[Ariadne] Processing module: {module_name}")
+
+        # 检查是否需要重新提取（使用 stat-based hash）
+        if not self._needs_reindex(module_name, classes_dir):
+            print(f"[Ariadne]   -> Skipped (unchanged)")
+            return {"symbols": 0, "edges": 0, "error": None}
+
+        class_files = self._find_class_files(classes_dir, limit)
+        if not class_files:
+            print(f"[Ariadne]   -> No class files found")
+            return {"symbols": 0, "edges": 0, "error": None}
+
+        print(f"[Ariadne]   -> Analyzing {len(class_files)} class files...")
+
+        try:
+            result = self.asm_client.analyze_classes(
+                class_files=[str(f) for f in class_files],
+                domains=domains,
+            )
+
+            if not result.get("success"):
+                return {"symbols": 0, "edges": 0, "error": f"ASM analysis failed for {module_name}"}
+
+            classes = result.get("classes", [])
+            symbols, edges = self._process_classes(classes, project_path)
+
+            # 直接存储，不累积到内存
+            self.store.insert_symbols(symbols)
+            self.store.insert_edges(edges)
+
+            # 更新 hash
+            content_hash = self._compute_hash(classes_dir)
+            self.store.set_metadata(f"hash:{module_name}", content_hash)
+
+            print(f"[Ariadne]   -> {len(symbols)} symbols, {len(edges)} edges")
+            return {"symbols": len(symbols), "edges": len(edges), "error": None}
+
+        except Exception as e:
+            print(f"[Ariadne]   -> ERROR: {e}")
+            return {"symbols": 0, "edges": 0, "error": f"Error processing {module_name}: {e}"}
+
+    def _build_source_index(self, project_path: Path) -> dict[str, Path]:
+        """一次性构建源文件索引，避免 N+1 查找。"""
+        index: dict[str, Path] = {}
+        for src_dir in ["src/main/java", "src/java", "src"]:
+            src_path = project_path / src_dir
+            if src_path.exists():
+                for java_file in src_path.rglob("*.java"):
+                    # 将路径转换为 FQN key: src/main/java/com/example/Foo.java -> com.example.Foo
+                    try:
+                        relative = java_file.relative_to(src_path)
+                        fqn_key = str(relative.with_suffix("")).replace(os.sep, ".")
+                        index[fqn_key] = java_file
+                    except ValueError:
+                        continue
+        return index
+
+    def _find_source_file(self, class_fqn: str) -> Path | None:
+        """从索引中查找源文件（O(1) 查找）。"""
+        if self._source_index is None:
+            return None
+        # 处理内部类：com.example.Outer$Inner -> com.example.Outer
+        base_fqn = class_fqn.split("$")[0]
+        return self._source_index.get(base_fqn)
 
     def _find_class_dirs(self, project_path: Path) -> list[tuple[Path, str]]:
         """Find compiled class directories in the project."""
@@ -160,24 +194,26 @@ class Extractor:
         return class_files
 
     def _needs_reindex(self, module_name: str, classes_dir: Path) -> bool:
-        """Check if a module needs re-indexing based on content hash."""
+        """Check if a module needs re-indexing based on stat hash."""
         current_hash = self._compute_hash(classes_dir)
         stored_hash = self.store.get_metadata(f"hash:{module_name}")
         return current_hash != stored_hash
 
     def _compute_hash(self, classes_dir: Path) -> str:
-        """Compute SHA256 hash of all .class files."""
+        """使用 stat (mtime + size) 计算 hash，避免读取文件内容。"""
         hasher = hashlib.sha256()
         class_files = sorted(classes_dir.rglob("*.class"))
         for class_file in class_files:
+            stat = class_file.stat()
+            # 使用文件名 + mtime + size 作为 hash 输入
             hasher.update(class_file.name.encode("utf-8"))
-            hasher.update(class_file.read_bytes())
+            hasher.update(str(stat.st_mtime_ns).encode("utf-8"))
+            hasher.update(str(stat.st_size).encode("utf-8"))
         return hasher.hexdigest()
 
     def _process_classes(
         self,
         classes: list[dict[str, Any]],
-        module_name: str,
         project_path: Path,
     ) -> tuple[list[SymbolData], list[EdgeData]]:
         """Process ASM analysis results into SymbolData and EdgeData."""
@@ -188,8 +224,8 @@ class Extractor:
             class_fqn = class_data["fqn"]
             class_name = class_fqn.rsplit(".", 1)[-1]
 
-            # Determine source file path
-            source_path = self._find_source_file(class_fqn, project_path)
+            # 使用索引查找源文件 (O(1))
+            source_path = self._find_source_file(class_fqn)
 
             # Create class symbol
             class_symbol = SymbolData(
@@ -233,7 +269,7 @@ class Extractor:
                 # Process calls
                 for call in method.get("calls", []):
                     to_fqn = call.get("toFqn")
-                    if to_fqn and not self._is_external(to_fqn):
+                    if to_fqn and not to_fqn.startswith(EXTERNAL_PREFIXES):
                         edges.append(EdgeData(
                             from_fqn=method_fqn,
                             to_fqn=to_fqn,
@@ -260,26 +296,6 @@ class Extractor:
                     symbols.append(field_symbol)
 
         return symbols, edges
-
-    def _find_source_file(self, class_fqn: str, project_path: Path) -> Path | None:
-        """Try to find the source file for a class FQN."""
-        relative_path = class_fqn.replace(".", "/") + ".java"
-        # Check common source locations
-        for src_dir in ["src/main/java", "src/java", "src"]:
-            source_file = project_path / src_dir / relative_path
-            if source_file.exists():
-                return source_file
-        return None
-
-    def _is_external(self, fqn: str) -> bool:
-        """Check if a FQN belongs to an external library."""
-        external_prefixes = [
-            "java.", "javax.", "jdk.", "sun.", "com.sun.",
-            "org.w3c.", "org.xml.", "org.omg.", "org.ietf.",
-            "org.slf4j.", "org.apache.", "org.springframework.",
-            "com.fasterxml.", "com.google.", "org.hibernate.",
-        ]
-        return any(fqn.startswith(prefix) for prefix in external_prefixes)
 
     def close(self) -> None:
         """Close resources."""

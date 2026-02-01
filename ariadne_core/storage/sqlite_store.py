@@ -68,21 +68,6 @@ class SQLiteStore:
         self.conn.commit()
         return len(rows)
 
-    def insert_symbols_raw(self, rows: list[tuple]) -> int:
-        """Insert raw symbol tuples (fqn, kind, name, file_path, line_number,
-        modifiers, signature, parent_fqn, annotations)."""
-        if not rows:
-            return 0
-        cursor = self.conn.cursor()
-        cursor.executemany(
-            """INSERT OR REPLACE INTO symbols
-               (fqn, kind, name, file_path, line_number, modifiers, signature, parent_fqn, annotations)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            rows,
-        )
-        self.conn.commit()
-        return len(rows)
-
     def get_symbol(self, fqn: str) -> dict[str, Any] | None:
         """Get a symbol by FQN."""
         cursor = self.conn.cursor()
@@ -133,18 +118,6 @@ class SQLiteStore:
             return 0
         cursor = self.conn.cursor()
         rows = [e.to_row() for e in edges]
-        cursor.executemany(
-            "INSERT INTO edges (from_fqn, to_fqn, relation, metadata) VALUES (?, ?, ?, ?)",
-            rows,
-        )
-        self.conn.commit()
-        return len(rows)
-
-    def insert_edges_raw(self, rows: list[tuple]) -> int:
-        """Insert raw edge tuples (from_fqn, to_fqn, relation, metadata)."""
-        if not rows:
-            return 0
-        cursor = self.conn.cursor()
         cursor.executemany(
             "INSERT INTO edges (from_fqn, to_fqn, relation, metadata) VALUES (?, ?, ?, ?)",
             rows,

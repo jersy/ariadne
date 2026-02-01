@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_fqn);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_fqn);
 CREATE INDEX IF NOT EXISTS idx_edges_relation ON edges(relation);
+-- 复合索引：用于 get_call_chain 和 get_reverse_callers 查询优化
+CREATE INDEX IF NOT EXISTS idx_edges_from_relation ON edges(from_fqn, relation);
+CREATE INDEX IF NOT EXISTS idx_edges_to_relation ON edges(to_fqn, relation);
 
 -- Index metadata (for tracking indexed state)
 CREATE TABLE IF NOT EXISTS index_metadata (
