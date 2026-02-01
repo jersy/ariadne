@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS entry_points (
     http_path TEXT,
     cron_expression TEXT,
     mq_queue TEXT,
-    FOREIGN KEY (symbol_fqn) REFERENCES symbols(fqn)
+    FOREIGN KEY (symbol_fqn) REFERENCES symbols(fqn) ON DELETE CASCADE
 );
 
 -- External dependencies (Redis, MySQL, MQ, RPC)
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS external_dependencies (
     dependency_type TEXT NOT NULL,
     target TEXT,
     strength TEXT DEFAULT 'strong',
-    FOREIGN KEY (caller_fqn) REFERENCES symbols(fqn)
+    FOREIGN KEY (caller_fqn) REFERENCES symbols(fqn) ON DELETE CASCADE
 );
 
 -- Anti-pattern detection results
@@ -77,9 +77,11 @@ CREATE TABLE IF NOT EXISTS anti_patterns (
     rule_id TEXT NOT NULL,
     from_fqn TEXT NOT NULL,
     to_fqn TEXT,
-    severity TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK(severity IN ('error', 'warning', 'info')),
     message TEXT NOT NULL,
-    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (from_fqn) REFERENCES symbols(fqn) ON DELETE CASCADE,
+    FOREIGN KEY (to_fqn) REFERENCES symbols(fqn) ON DELETE SET NULL
 );
 """
 
@@ -88,35 +90,54 @@ SCHEMA_L1 = """
 -- Business summaries (text in SQLite, vectors in ChromaDB)
 CREATE TABLE IF NOT EXISTS summaries (
     id INTEGER PRIMARY KEY,
-    target_fqn TEXT NOT NULL,
-    level TEXT NOT NULL,
+    target_fqn TEXT NOT NULL UNIQUE,
+    level TEXT NOT NULL CHECK(level IN ('method', 'class', 'package', 'module')),
     summary TEXT NOT NULL,
     vector_id TEXT,
     is_stale BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (target_fqn) REFERENCES symbols(fqn) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_summaries_target_fqn ON summaries(target_fqn);
+CREATE INDEX IF NOT EXISTS idx_summaries_level ON summaries(level);
+CREATE INDEX IF NOT EXISTS idx_summaries_stale ON summaries(is_stale);
+CREATE INDEX IF NOT EXISTS idx_summaries_vector_id ON summaries(vector_id);
 
 -- Domain glossary
 CREATE TABLE IF NOT EXISTS glossary (
     id INTEGER PRIMARY KEY,
-    code_term TEXT NOT NULL,
+    code_term TEXT NOT NULL UNIQUE,
     business_meaning TEXT NOT NULL,
     synonyms TEXT,
     source_fqn TEXT,
-    vector_id TEXT
+    vector_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_fqn) REFERENCES symbols(fqn) ON DELETE SET NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_glossary_code_term ON glossary(code_term);
+CREATE INDEX IF NOT EXISTS idx_glossary_source_fqn ON glossary(source_fqn);
+CREATE INDEX IF NOT EXISTS idx_glossary_vector_id ON glossary(vector_id);
 
 -- Business constraints
 CREATE TABLE IF NOT EXISTS constraints (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL,
     source_fqn TEXT,
     source_line INTEGER,
     constraint_type TEXT,
-    vector_id TEXT
+    vector_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_fqn) REFERENCES symbols(fqn) ON DELETE SET NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_constraints_name ON constraints(name);
+CREATE INDEX IF NOT EXISTS idx_constraints_source_fqn ON constraints(source_fqn);
+CREATE INDEX IF NOT EXISTS idx_constraints_type ON constraints(constraint_type);
+CREATE INDEX IF NOT EXISTS idx_constraints_vector_id ON constraints(vector_id);
 """
 
 ALL_SCHEMAS = {

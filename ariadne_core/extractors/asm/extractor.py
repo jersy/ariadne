@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from ariadne_core.extractors.asm.client import ASMClient
+from ariadne_core.extractors.spring.dependency_analyzer import ExternalDependencyAnalyzer
+from ariadne_core.extractors.spring.entry_detector import EntryDetector
 from ariadne_core.models.types import EdgeData, ExtractionResult, RelationKind, SymbolData, SymbolKind
 from ariadne_core.storage.sqlite_store import SQLiteStore
 
@@ -37,6 +39,9 @@ class Extractor:
         self.store = SQLiteStore(db_path, init=init)
         self.asm_client = ASMClient(service_url)
         self._source_index: dict[str, Path] | None = None
+        # L2 analyzers
+        self._entry_detector = EntryDetector()
+        self._dependency_analyzer = ExternalDependencyAnalyzer()
 
     def extract_project(
         self,
@@ -68,6 +73,8 @@ class Extractor:
 
         total_symbols = 0
         total_edges = 0
+        total_entries = 0
+        total_deps = 0
         errors: list[str] = []
 
         for classes_dir, module_name in class_dirs:
@@ -79,14 +86,19 @@ class Extractor:
             else:
                 total_symbols += result["symbols"]
                 total_edges += result["edges"]
+                total_entries += result.get("entries", 0)
+                total_deps += result.get("deps", 0)
 
         print(f"[Ariadne] Extraction complete: {total_symbols} symbols, {total_edges} edges")
+        print(f"[Ariadne] L2 analysis: {total_entries} entry points, {total_deps} external dependencies")
 
         return ExtractionResult(
             success=len(errors) == 0,
             stats={
                 "total_symbols": total_symbols,
                 "total_edges": total_edges,
+                "total_entries": total_entries,
+                "total_deps": total_deps,
                 "modules": len(class_dirs),
             },
             errors=errors,
@@ -131,12 +143,28 @@ class Extractor:
             self.store.insert_symbols(symbols)
             self.store.insert_edges(edges)
 
+            # L2 分析: 入口点检测
+            entries = self._entry_detector.detect_entries(classes)
+            self.store.insert_entry_points(entries)
+
+            # L2 分析: 外部依赖识别
+            deps = self._dependency_analyzer.analyze(classes)
+            self.store.insert_external_dependencies(deps)
+
             # 更新 hash
             content_hash = self._compute_hash(classes_dir)
             self.store.set_metadata(f"hash:{module_name}", content_hash)
 
             print(f"[Ariadne]   -> {len(symbols)} symbols, {len(edges)} edges")
-            return {"symbols": len(symbols), "edges": len(edges), "error": None}
+            if entries or deps:
+                print(f"[Ariadne]   -> L2: {len(entries)} entries, {len(deps)} deps")
+            return {
+                "symbols": len(symbols),
+                "edges": len(edges),
+                "entries": len(entries),
+                "deps": len(deps),
+                "error": None,
+            }
 
         except Exception as e:
             print(f"[Ariadne]   -> ERROR: {e}")

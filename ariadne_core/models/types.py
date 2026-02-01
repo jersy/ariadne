@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -81,3 +82,219 @@ class ExtractionResult:
     edges: list[EdgeData] = field(default_factory=list)
     stats: dict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+
+
+# ========================
+# L2 Architecture Layer Types
+# ========================
+
+
+class EntryType(str, Enum):
+    """入口点类型。"""
+
+    HTTP_API = "http_api"
+    SCHEDULED = "scheduled"
+    MQ_CONSUMER = "mq_consumer"
+
+
+class DependencyType(str, Enum):
+    """外部依赖类型。"""
+
+    REDIS = "redis"
+    MYSQL = "mysql"
+    MQ = "mq"
+    HTTP = "http"
+    RPC = "rpc"
+
+
+class DependencyStrength(str, Enum):
+    """依赖强度。"""
+
+    STRONG = "strong"
+    WEAK = "weak"
+
+
+class Severity(str, Enum):
+    """反模式严重性。"""
+
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
+
+
+@dataclass
+class EntryPointData:
+    """入口点（HTTP API、定时任务、消息消费者）。"""
+
+    symbol_fqn: str
+    entry_type: EntryType
+    http_method: Optional[str] = None
+    http_path: Optional[str] = None
+    cron_expression: Optional[str] = None
+    mq_queue: Optional[str] = None
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.symbol_fqn,
+            self.entry_type.value,
+            self.http_method,
+            self.http_path,
+            self.cron_expression,
+            self.mq_queue,
+        )
+
+
+@dataclass
+class ExternalDependencyData:
+    """外部依赖调用（Redis/MySQL/MQ 等）。"""
+
+    caller_fqn: str
+    dependency_type: DependencyType
+    target: str
+    strength: DependencyStrength = DependencyStrength.STRONG
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.caller_fqn,
+            self.dependency_type.value,
+            self.target,
+            self.strength.value,
+        )
+
+
+@dataclass
+class AntiPatternData:
+    """反模式检测结果。"""
+
+    rule_id: str
+    from_fqn: str
+    severity: Severity
+    message: str
+    to_fqn: Optional[str] = None
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.rule_id,
+            self.from_fqn,
+            self.to_fqn,
+            self.severity.value,
+            self.message,
+        )
+
+
+@dataclass
+class CallChainResult:
+    """调用链追踪结果。"""
+
+    entry: dict
+    chain: list[dict]
+    external_deps: list[dict]
+    depth: int
+
+    @property
+    def entry_fqn(self) -> str:
+        """获取入口点的 FQN。"""
+        return self.entry.get("symbol_fqn") or self.entry.get("fqn", "")
+
+    @property
+    def max_depth(self) -> int:
+        """最大深度的别名。"""
+        return self.depth
+
+
+# ========================
+# L1 Business Layer Types
+# ========================
+
+
+class SummaryLevel(str, Enum):
+    """摘要层级。"""
+
+    METHOD = "method"
+    CLASS = "class"
+    PACKAGE = "package"
+    MODULE = "module"
+
+
+class ConstraintType(str, Enum):
+    """业务约束类型。"""
+
+    VALIDATION = "validation"
+    BUSINESS_RULE = "business_rule"
+    INVARIANT = "invariant"
+
+
+@dataclass
+class SummaryData:
+    """业务摘要数据（L1 层）。"""
+
+    target_fqn: str
+    level: SummaryLevel
+    summary: str
+    vector_id: Optional[str] = None
+    is_stale: bool = False
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.target_fqn,
+            self.level.value,
+            self.summary,
+            self.vector_id,
+            self.is_stale,
+            self.created_at,
+            self.updated_at,
+        )
+
+
+@dataclass
+class GlossaryEntry:
+    """领域词汇表条目（L1 层）。"""
+
+    code_term: str
+    business_meaning: str
+    synonyms: list[str] = field(default_factory=list)
+    source_fqn: Optional[str] = None
+    vector_id: Optional[str] = None
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.code_term,
+            self.business_meaning,
+            json.dumps(self.synonyms) if self.synonyms else None,
+            self.source_fqn,
+            self.vector_id,
+            self.created_at,
+        )
+
+
+@dataclass
+class ConstraintEntry:
+    """业务约束条目（L1 层）。"""
+
+    name: str
+    description: str
+    source_fqn: Optional[str] = None
+    source_line: Optional[int] = None
+    constraint_type: ConstraintType = ConstraintType.BUSINESS_RULE
+    vector_id: Optional[str] = None
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_row(self) -> tuple:
+        """Convert to SQLite row tuple."""
+        return (
+            self.name,
+            self.description,
+            self.source_fqn,
+            self.source_line,
+            self.constraint_type.value,
+            self.vector_id,
+            self.created_at,
+        )
