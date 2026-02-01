@@ -13,6 +13,9 @@ from ariadne_core.models.types import (
     EntryPointData,
     ExternalDependencyData,
     SymbolData,
+    ConstraintEntry,
+    GlossaryEntry,
+    SummaryData,
 )
 from ariadne_core.storage.schema import ALL_SCHEMAS
 
@@ -405,3 +408,317 @@ class SQLiteStore:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+    # ========================
+    # L1: Summaries
+    # ========================
+
+    def create_summary(self, summary: SummaryData) -> None:
+        """Create a new summary record.
+
+        Args:
+            summary: SummaryData to create
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """INSERT INTO summaries (target_fqn, level, summary, vector_id, is_stale, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(target_fqn) DO UPDATE SET
+               summary = excluded.summary,
+               vector_id = excluded.vector_id,
+               is_stale = excluded.is_stale,
+               updated_at = excluded.updated_at""",
+            summary.to_row(),
+        )
+        self.conn.commit()
+
+    def get_summary(self, target_fqn: str, level: str | None = None) -> dict[str, Any] | None:
+        """Get a summary by target FQN and optional level.
+
+        Args:
+            target_fqn: Target symbol FQN
+            level: Optional summary level filter
+
+        Returns:
+            Summary dict or None if not found
+        """
+        cursor = self.conn.cursor()
+        if level:
+            cursor.execute(
+                "SELECT * FROM summaries WHERE target_fqn = ? AND level = ?",
+                (target_fqn, level),
+            )
+        else:
+            cursor.execute("SELECT * FROM summaries WHERE target_fqn = ?", (target_fqn,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def mark_summary_stale(self, target_fqn: str) -> None:
+        """Mark a summary as stale (needs regeneration).
+
+        Args:
+            target_fqn: Target symbol FQN to mark stale
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE summaries SET is_stale = 1 WHERE target_fqn = ?",
+            (target_fqn,),
+        )
+        self.conn.commit()
+
+    def mark_summaries_stale_by_file(self, file_path: str) -> int:
+        """Mark all summaries for symbols in a file as stale.
+
+        Args:
+            file_path: File path to mark stale
+
+        Returns:
+            Number of summaries marked stale
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """UPDATE summaries SET is_stale = 1
+               WHERE target_fqn IN (SELECT fqn FROM symbols WHERE file_path = ?)""",
+            (file_path,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    def get_stale_summaries(self, limit: int = 1000) -> list[dict[str, Any]]:
+        """Get summaries marked as stale.
+
+        Args:
+            limit: Maximum number of summaries to return
+
+        Returns:
+            List of stale summary dicts
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM summaries WHERE is_stale = 1 LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_summary_vector_id(self, target_fqn: str, vector_id: str) -> None:
+        """Update the vector ID for a summary.
+
+        Args:
+            target_fqn: Target symbol FQN
+            vector_id: Vector store ID
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE summaries SET vector_id = ?, is_stale = 0 WHERE target_fqn = ?",
+            (vector_id, target_fqn),
+        )
+        self.conn.commit()
+
+    def get_summaries_by_level(self, level: str) -> list[dict[str, Any]]:
+        """Get all summaries of a given level.
+
+        Args:
+            level: Summary level (method, class, package, module)
+
+        Returns:
+            List of summary dicts
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM summaries WHERE level = ?", (level,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_summary_count(self) -> int:
+        """Get total summary count."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM summaries")
+        return cursor.fetchone()[0]
+
+    # ========================
+    # L1: Glossary
+    # ========================
+
+    def create_glossary_entry(self, entry: GlossaryEntry) -> None:
+        """Create a new glossary entry.
+
+        Args:
+            entry: GlossaryEntry to create
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """INSERT INTO glossary (code_term, business_meaning, synonyms, source_fqn, vector_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(code_term) DO UPDATE SET
+               business_meaning = excluded.business_meaning,
+               synonyms = excluded.synonyms,
+               source_fqn = excluded.source_fqn,
+               vector_id = excluded.vector_id""",
+            entry.to_row(),
+        )
+        self.conn.commit()
+
+    def get_glossary_entry(self, code_term: str) -> dict[str, Any] | None:
+        """Get a glossary entry by code term.
+
+        Args:
+            code_term: Code term to look up
+
+        Returns:
+            Glossary entry dict or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM glossary WHERE code_term = ?", (code_term,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def search_glossary_terms(self, pattern: str) -> list[dict[str, Any]]:
+        """Search glossary terms by pattern.
+
+        Args:
+            pattern: Search pattern for code_term or business_meaning
+
+        Returns:
+            List of matching glossary entries
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """SELECT * FROM glossary
+               WHERE code_term LIKE ? OR business_meaning LIKE ?
+               LIMIT 100""",
+            (f"%{pattern}%", f"%{pattern}%"),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_glossary_by_source(self, source_fqn: str) -> list[dict[str, Any]]:
+        """Get all glossary entries from a source FQN.
+
+        Args:
+            source_fqn: Source symbol FQN
+
+        Returns:
+            List of glossary entries
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM glossary WHERE source_fqn = ?", (source_fqn,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_glossary_vector_id(self, code_term: str, vector_id: str) -> None:
+        """Update the vector ID for a glossary entry.
+
+        Args:
+            code_term: Code term
+            vector_id: Vector store ID
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE glossary SET vector_id = ? WHERE code_term = ?",
+            (vector_id, code_term),
+        )
+        self.conn.commit()
+
+    def get_glossary_count(self) -> int:
+        """Get total glossary entry count."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM glossary")
+        return cursor.fetchone()[0]
+
+    # ========================
+    # L1: Constraints
+    # ========================
+
+    def create_constraint(self, constraint: ConstraintEntry) -> None:
+        """Create a new constraint entry.
+
+        Args:
+            constraint: ConstraintEntry to create
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """INSERT INTO constraints (name, description, source_fqn, source_line, constraint_type, vector_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+               description = excluded.description,
+               source_fqn = excluded.source_fqn,
+               source_line = excluded.source_line,
+               constraint_type = excluded.constraint_type,
+               vector_id = excluded.vector_id""",
+            constraint.to_row(),
+        )
+        self.conn.commit()
+
+    def get_constraint(self, name: str) -> dict[str, Any] | None:
+        """Get a constraint by name.
+
+        Args:
+            name: Constraint name
+
+        Returns:
+            Constraint dict or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM constraints WHERE name = ?", (name,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_constraints_by_source(self, source_fqn: str) -> list[dict[str, Any]]:
+        """Get all constraints from a source FQN.
+
+        Args:
+            source_fqn: Source symbol FQN
+
+        Returns:
+            List of constraint dicts
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM constraints WHERE source_fqn = ?", (source_fqn,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_constraints_by_type(self, constraint_type: str) -> list[dict[str, Any]]:
+        """Get all constraints of a given type.
+
+        Args:
+            constraint_type: Constraint type (validation, business_rule, invariant)
+
+        Returns:
+            List of constraint dicts
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM constraints WHERE constraint_type = ?", (constraint_type,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def search_constraints(self, pattern: str) -> list[dict[str, Any]]:
+        """Search constraints by pattern in name or description.
+
+        Args:
+            pattern: Search pattern
+
+        Returns:
+            List of matching constraint dicts
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """SELECT * FROM constraints
+               WHERE name LIKE ? OR description LIKE ?
+               LIMIT 100""",
+            (f"%{pattern}%", f"%{pattern}%"),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_constraint_vector_id(self, name: str, vector_id: str) -> None:
+        """Update the vector ID for a constraint.
+
+        Args:
+            name: Constraint name
+            vector_id: Vector store ID
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE constraints SET vector_id = ? WHERE name = ?",
+            (vector_id, name),
+        )
+        self.conn.commit()
+
+    def get_constraint_count(self) -> int:
+        """Get total constraint count."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM constraints")
+        return cursor.fetchone()[0]

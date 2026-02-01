@@ -178,7 +178,7 @@ Java Source Code
 
 **任务清单：**
 
-- [ ] **3.1.1 创建 `ariadne_llm/` 模块**
+- [x] **3.1.1 创建 `ariadne_llm/` 模块**
   - 实现 `config.py`：LLMConfig 数据类
     - 支持 OpenAI/DeepSeek/Ollama Provider
     - 环境变量配置（ARIADNE_LLM_PROVIDER, OPENAI_API_KEY 等）
@@ -192,7 +192,7 @@ Java Source Code
     - `embed_texts()`：批量向量化
     - 支持本地 Ollama 作为 fallback
 
-- [ ] **3.1.2 更新依赖**
+- [x] **3.1.2 更新依赖**
   ```toml
   [project.dependencies]
   "openai>=1.0.0",           # LLM API
@@ -201,7 +201,7 @@ Java Source Code
   "python-dotenv>=1.0.0",    # 环境变量
   ```
 
-- [ ] **3.1.3 单元测试**
+- [x] **3.1.3 单元测试**
   - Mock OpenAI API 响应
   - 测试重试逻辑
   - 测试并发控制
@@ -225,7 +225,7 @@ assert "认证" in summary or "登录" in summary
 
 **任务清单：**
 
-- [ ] **3.2.1 实现 `vector_store.py`**
+[x]1 实现 `vector_store.py`**
   - `ChromaVectorStore` 类
     - `__init__(path, collection_name)`：初始化连接
     - `add_summary(id, text, metadata)`：添加摘要向量
@@ -237,7 +237,7 @@ assert "认证" in summary or "登录" in summary
     - `ariadne_glossary`：领域词汇
     - `ariadne_constraints`：业务约束
 
-- [ ] **3.2.2 扩展 `sqlite_store.py`**
+[x]2 扩展 `sqlite_store.py`**
   - 添加 L1 表的 CRUD 操作：
     - `create_summary(summary_data)`：创建摘要记录
     - `get_summary(target_fqn, level)`：获取摘要
@@ -246,7 +246,7 @@ assert "认证" in summary or "登录" in summary
     - `update_summary_vector_id(target_fqn, vector_id)`：关联向量 ID
   - 类似方法用于 glossary 和 constraints
 
-- [ ] **3.2.3 扩展 `types.py`**
+[x]3 扩展 `types.py`**
   ```python
   @dataclass
   class SummaryData:
@@ -275,7 +275,7 @@ assert "认证" in summary or "登录" in summary
       vector_id: str | None = None
   ```
 
-- [ ] **3.2.4 集成测试**
+[x]4 集成测试**
   - 使用测试 Java 项目
   - 验证向量存储和检索
   - 测试元数据过滤
@@ -297,7 +297,7 @@ assert len(results) > 0
 
 **任务清单：**
 
-- [ ] **3.3.1 实现 `prompts.py`**
+[x]1 实现 `prompts.py`**
   - `METHOD_SUMMARY_PROMPT`：方法摘要模板
     ```python
     METHOD_SUMMARY_PROMPT = """你是一个 Java 代码分析专家。请用一句话总结以下方法的功能，专注于它解决的业务问题。
@@ -323,7 +323,7 @@ assert len(results) > 0
   - `PACKAGE_SUMMARY_PROMPT`：包摘要模板（聚合类摘要）
   - `MODULE_SUMMARY_PROMPT`：模块摘要模板（聚合包摘要）
 
-- [ ] **3.3.2 实现 `summarizer.py`**
+[x]2 实现 `summarizer.py`**
   - `HierarchicalSummarizer` 类
     - `summarize_method(method_data)`：单方法摘要
     - `summarize_class(class_data, method_summaries)`：类摘要
@@ -331,19 +331,19 @@ assert len(results) > 0
     - `summarize_module(module_data, package_summaries)`：模块摘要
     - `generate_incremental_summaries(changed_symbols)`：增量摘要
 
-- [ ] **3.3.3 增量更新策略**
+[x]3 增量更新策略**
   - 基于文件 hash 检测变更（复用 Phase 1 机制）
   - 级联标记 stale：
     - Method 变更 → 标记 Method, Class, Package, Module 为 stale
     - Class 变更 → 标记 Class, Package, Module 为 stale
   - 重新生成摘要时自动清理 stale 标记
 
-- [ ] **3.3.4 Token 优化**
+[x]4 Token 优化**
   - 单次 LLM 调用限制：max_tokens = 4000
   - 超长方法截断策略：保留前 500 行 + 后 500 行
   - 批量处理并发控制：max_concurrent = 5
 
-- [ ] **3.3.5 集成测试**
+[x]5 集成测试**
   - 使用 Spring PetClinic 测试
   - 验证分层摘要质量
   - 测试增量更新
@@ -467,7 +467,7 @@ ariadne constraint-search "库存"
 
 **任务清单：**
 
-- [ ] **3.6.1 新增 CLI 命令**
+[x]1 新增 CLI 命令**
   ```bash
   # 摘要生成
   ariadne summarize --project <path> [--incremental] [--level <method|class|package|module>]
@@ -487,11 +487,11 @@ ariadne constraint-search "库存"
   ariadne constraint-search <keyword>
   ```
 
-- [ ] **3.6.2 集成到现有工作流**
+[x]2 集成到现有工作流**
   - `ariadne extract` 后自动触发 `summarize`
   - `ariadne rebuild` 重建所有 L1 数据
 
-- [ ] **3.6.3 输出格式**
+[x]3 输出格式**
   - 表格输出：rich 库格式化
   - JSON 输出：`--format json`
   - 详细模式：`--verbose`

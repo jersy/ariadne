@@ -88,7 +88,7 @@ SCHEMA_L1 = """
 -- Business summaries (text in SQLite, vectors in ChromaDB)
 CREATE TABLE IF NOT EXISTS summaries (
     id INTEGER PRIMARY KEY,
-    target_fqn TEXT NOT NULL,
+    target_fqn TEXT NOT NULL UNIQUE,
     level TEXT NOT NULL,
     summary TEXT NOT NULL,
     vector_id TEXT,
@@ -97,26 +97,42 @@ CREATE TABLE IF NOT EXISTS summaries (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX IF NOT EXISTS idx_summaries_target_fqn ON summaries(target_fqn);
+CREATE INDEX IF NOT EXISTS idx_summaries_level ON summaries(level);
+CREATE INDEX IF NOT EXISTS idx_summaries_stale ON summaries(is_stale);
+CREATE INDEX IF NOT EXISTS idx_summaries_vector_id ON summaries(vector_id);
+
 -- Domain glossary
 CREATE TABLE IF NOT EXISTS glossary (
     id INTEGER PRIMARY KEY,
-    code_term TEXT NOT NULL,
+    code_term TEXT NOT NULL UNIQUE,
     business_meaning TEXT NOT NULL,
     synonyms TEXT,
     source_fqn TEXT,
-    vector_id TEXT
+    vector_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_glossary_code_term ON glossary(code_term);
+CREATE INDEX IF NOT EXISTS idx_glossary_source_fqn ON glossary(source_fqn);
+CREATE INDEX IF NOT EXISTS idx_glossary_vector_id ON glossary(vector_id);
 
 -- Business constraints
 CREATE TABLE IF NOT EXISTS constraints (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL,
     source_fqn TEXT,
     source_line INTEGER,
     constraint_type TEXT,
-    vector_id TEXT
+    vector_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_constraints_name ON constraints(name);
+CREATE INDEX IF NOT EXISTS idx_constraints_source_fqn ON constraints(source_fqn);
+CREATE INDEX IF NOT EXISTS idx_constraints_type ON constraints(constraint_type);
+CREATE INDEX IF NOT EXISTS idx_constraints_vector_id ON constraints(vector_id);
 """
 
 ALL_SCHEMAS = {
