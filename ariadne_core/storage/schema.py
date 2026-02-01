@@ -89,12 +89,13 @@ SCHEMA_L1 = """
 CREATE TABLE IF NOT EXISTS summaries (
     id INTEGER PRIMARY KEY,
     target_fqn TEXT NOT NULL UNIQUE,
-    level TEXT NOT NULL,
+    level TEXT NOT NULL CHECK(level IN ('method', 'class', 'package', 'module')),
     summary TEXT NOT NULL,
     vector_id TEXT,
     is_stale BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (target_fqn) REFERENCES symbols(fqn) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_summaries_target_fqn ON summaries(target_fqn);
@@ -110,7 +111,8 @@ CREATE TABLE IF NOT EXISTS glossary (
     synonyms TEXT,
     source_fqn TEXT,
     vector_id TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_fqn) REFERENCES symbols(fqn) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_glossary_code_term ON glossary(code_term);
@@ -126,7 +128,8 @@ CREATE TABLE IF NOT EXISTS constraints (
     source_line INTEGER,
     constraint_type TEXT,
     vector_id TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_fqn) REFERENCES symbols(fqn) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_constraints_name ON constraints(name);

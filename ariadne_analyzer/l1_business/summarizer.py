@@ -45,6 +45,14 @@ class HierarchicalSummarizer:
         self.llm_client = LLMClient(config)
         self.config = config
 
+    def __enter__(self) -> "HierarchicalSummarizer":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        """Context manager exit - ensures cleanup."""
+        self.close()
+
     def summarize_method(
         self,
         method: SymbolData,

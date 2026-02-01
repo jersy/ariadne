@@ -5,22 +5,39 @@ This demonstrates:
 - Hierarchical summarization (Method → Class → Package)
 - Semantic search using vector embeddings
 - Vector storage with ChromaDB
+
+Required Environment Variables:
+- ARIADNE_DEEPSEEK_API_KEY: For LLM summarization
+- ARIADNE_OPENAI_API_KEY: For embeddings (SiliconFlow endpoint)
 """
 
 import os
+import sys
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables from .gitignored .env file
 load_dotenv()
+
+# Check for required API keys
+DEEPSEEK_KEY = os.environ.get("ARIADNE_DEEPSEEK_API_KEY")
+OPENAI_KEY = os.environ.get("ARIADNE_OPENAI_API_KEY")
+
+if not DEEPSEEK_KEY:
+    print("ERROR: ARIADNE_DEEPSEEK_API_KEY not set")
+    print("Please set the ARIADNE_DEEPSEEK_API_KEY environment variable")
+    sys.exit(1)
+
+if not OPENAI_KEY:
+    print("ERROR: ARIADNE_OPENAI_API_KEY not set")
+    print("Please set the ARIADNE_OPENAI_API_KEY environment variable")
+    sys.exit(1)
 
 # Configure to use DeepSeek
 os.environ["ARIADNE_LLM_PROVIDER"] = "deepseek"
-os.environ["ARIADNE_DEEPSEEK_API_KEY"] = "sk-f3169cb3c827406d818f8518d645ea4d"
 os.environ["ARIADNE_DEEPSEEK_BASE_URL"] = "https://api.deepseek.com"
 os.environ["ARIADNE_DEEPSEEK_MODEL"] = "deepseek-chat"
 
 # Configure embedder to use SiliconFlow
-os.environ["ARIADNE_OPENAI_API_KEY"] = "sk-eevkkfebgwpjrcyxjllfyfpiqtvhzrjsmbjmvmeomvzeonnr"
 os.environ["ARIADNE_OPENAI_BASE_URL"] = "https://api.siliconflow.cn/v1"
 os.environ["ARIADNE_OPENAI_EMBEDDING_MODEL"] = "BAAI/bge-m3"
 
@@ -146,7 +163,7 @@ def demo_semantic_search():
     # Configure embedder for SiliconFlow
     config = LLMConfig(
         provider=LLMProvider.OPENAI,
-        api_key="sk-eevkkfebgwpjrcyxjllfyfpiqtvhzrjsmbjmvmeomvzeonnr",
+        api_key=OPENAI_KEY,
         base_url="https://api.siliconflow.cn/v1",
         embedding_model="BAAI/bge-m3",
     )
@@ -217,7 +234,7 @@ def demo_persistence():
         # Configure embedder
         config = LLMConfig(
             provider=LLMProvider.OPENAI,
-            api_key="sk-eevkkfebgwpjrcyxjllfyfpiqtvhzrjsmbjmvmeomvzeonnr",
+            api_key=OPENAI_KEY,
             base_url="https://api.siliconflow.cn/v1",
             embedding_model="BAAI/bge-m3",
         )

@@ -10,7 +10,6 @@ Supports:
 - Ollama (local models)
 """
 
-import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -68,17 +67,38 @@ class LLMClient:
         self.config = config
         self._executor = ThreadPoolExecutor(max_workers=5)
 
-        # Create OpenAI client with appropriate settings
-        client_kwargs: dict[str, Any] = {
-            "api_key": config.api_key or "not-needed",  # Ollama doesn't need API key
-            "timeout": config.timeout,
-        }
-
-        if config.base_url:
-            client_kwargs["base_url"] = config.base_url
+        # Create OpenAI client with appropriate settings per provider
+        if config.provider == LLMProvider.OLLAMA:
+            # Ollama doesn't require a real API key
+            client_kwargs: dict[str, Any] = {
+                "api_key": "ollama",
+                "base_url": config.base_url,
+                "timeout": config.timeout,
+            }
+        else:
+            # For OpenAI and DeepSeek, API key is required
+            if not config.api_key:
+                raise ValueError(
+                    f"{config.provider.value} requires API key. "
+                    f"Set ARIADNE_{config.provider.value.upper()}_API_KEY environment variable."
+                )
+            client_kwargs: dict[str, Any] = {
+                "api_key": config.api_key,
+                "timeout": config.timeout,
+            }
+            if config.base_url:
+                client_kwargs["base_url"] = config.base_url
 
         self.client = OpenAI(**client_kwargs)
         logger.info(f"Initialized LLM client: {config.provider.value} ({config.model})")
+
+    def __enter__(self) -> "LLMClient":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        """Context manager exit - ensures cleanup."""
+        self.close()
 
     def _should_retry(exception: Exception) -> bool:
         """Check if exception should trigger a retry.
@@ -218,28 +238,35 @@ class LLMClient:
         Returns:
             List of generated summaries
         """
-        results = ["N/A"] * len(items)
-        semaphore = asyncio.Semaphore(concurrent_limit)
+        if not items:
+            return []
 
-        async def generate_one(index: int, item: dict[str, Any]) -> None:
-            async with semaphore:
-                loop = asyncio.get_event_loop()
-                summary = await loop.run_in_executor(
-                    self._executor,
+        results = {}
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=concurrent_limit) as executor:
+            # Submit all tasks
+            futures = {
+                executor.submit(
                     self.generate_summary,
                     item["code"],
                     item.get("context"),
-                )
-                results[index] = summary
+                ): i
+                for i, item in enumerate(items)
+            }
 
-        async def generate_all() -> None:
-            tasks = [
-                generate_one(i, item) for i, item in enumerate(items)
-            ]
-            await asyncio.gather(*tasks)
+            # Collect results as they complete
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    results[index] = future.result()
+                except Exception as e:
+                    logger.error(f"Failed to generate summary for item {index}: {e}")
+                    results[index] = "N/A"
 
-        asyncio.run(generate_all())
-        return results
+        # Return results in original order
+        return [results.get(i, "N/A") for i in range(len(items))]
 
     def generate_structured_response(
         self,

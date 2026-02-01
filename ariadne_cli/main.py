@@ -1,9 +1,42 @@
 """Ariadne CLI - Code Knowledge Graph for Architect Agents."""
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def validate_project_path(file_path: str, project_root: Path) -> Path | None:
+    """Validate that file_path is within project_root.
+
+    Prevents path traversal attacks by ensuring resolved paths are contained
+    within the project directory.
+
+    Args:
+        file_path: The file path to validate (from database)
+        project_root: The root directory of the project
+
+    Returns:
+        Resolved Path if valid, None otherwise
+    """
+    if not file_path:
+        return None
+
+    try:
+        resolved_path = Path(file_path).resolve()
+        resolved_path.relative_to(project_root)
+        # Path is within project root
+        if not resolved_path.exists():
+            logger.warning(f"Path does not exist: {file_path}")
+            return None
+        return resolved_path
+    except ValueError:
+        # Path is outside project root
+        logger.warning(f"Path outside project root: {file_path}")
+        return None
 
 
 def main() -> int:
@@ -451,8 +484,10 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
     from ariadne_core.models.types import SymbolKind, SummaryData, SummaryLevel
     from ariadne_core.storage.sqlite_store import SQLiteStore
 
+    # Resolve project root for path validation
+    project_root = Path(args.project).resolve()
+
     store = SQLiteStore(args.db)
-    summarizer = None
 
     try:
         # Get symbols to summarize
@@ -477,58 +512,56 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
             print("No symbols found to summarize.")
             return 0
 
-        summarizer = HierarchicalSummarizer()
+        # Use context manager for automatic cleanup
+        with HierarchicalSummarizer() as summarizer:
+            print(f"Summarizing {len(symbols)} symbols...")
 
-        print(f"Summarizing {len(symbols)} symbols...")
+            count = 0
+            for symbol in symbols:
+                # Read source code with path validation
+                file_path = symbol.get("file_path")
+                validated_path = validate_project_path(file_path, project_root)
 
-        count = 0
-        for symbol in symbols:
-            # Read source code
-            file_path = symbol.get("file_path")
-            if not file_path or not Path(file_path).exists():
-                continue
+                if not validated_path:
+                    continue
 
-            with open(file_path) as f:
-                source_code = f.read()
+                with open(validated_path) as f:
+                    source_code = f.read()
 
-            # Generate summary
-            summary_text = summarizer.summarize_method(
-                SymbolData(
-                    fqn=symbol["fqn"],
-                    kind=SymbolKind(symbol["kind"]),
-                    name=symbol["name"],
-                    signature=symbol.get("signature"),
-                    modifiers=symbol.get("modifiers", []),
-                    annotations=symbol.get("annotations", []),
-                ),
-                source_code,
-            )
+                # Generate summary
+                summary_text = summarizer.summarize_method(
+                    SymbolData(
+                        fqn=symbol["fqn"],
+                        kind=SymbolKind(symbol["kind"]),
+                        name=symbol["name"],
+                        signature=symbol.get("signature"),
+                        modifiers=symbol.get("modifiers", []),
+                        annotations=symbol.get("annotations", []),
+                    ),
+                    source_code,
+                )
 
-            # Store summary
-            summary = SummaryData(
-                target_fqn=symbol["fqn"],
-                level=SummaryLevel.METHOD,
-                summary=summary_text,
-            )
+                # Store summary
+                summary = SummaryData(
+                    target_fqn=symbol["fqn"],
+                    level=SummaryLevel.METHOD,
+                    summary=summary_text,
+                )
 
-            store.create_summary(summary)
-            count += 1
+                store.create_summary(summary)
+                count += 1
 
-            if count % 10 == 0:
-                print(f"  Progress: {count}/{len(symbols)}")
+                if count % 10 == 0:
+                    print(f"  Progress: {count}/{len(symbols)}")
 
-        print(f"\nGenerated {count} summaries.")
-        return 0
+            print(f"\nGenerated {count} summaries.")
+            return 0
     except Exception as e:
         print(f"Error: {e}")
         import traceback
 
         traceback.print_exc()
         return 1
-    finally:
-        if summarizer:
-            summarizer.close()
-        store.close()
 
 
 def _cmd_summary(args: argparse.Namespace) -> int:

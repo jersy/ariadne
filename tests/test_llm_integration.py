@@ -1,26 +1,36 @@
 """Integration test for LLM functionality.
 
-Tests actual LLM calls using DeepSeek and SiliconFlow.
+Tests actual LLM calls using configured API keys.
+Set ARIADNE_DEEPSEEK_API_KEY and ARIADNE_OPENAI_API_KEY environment variables to run.
 """
 
 import os
 from pathlib import Path
 
-# Load environment variables
+# Load environment variables from .gitignored .env file
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configure to use DeepSeek
-os.environ["ARIADNE_LLM_PROVIDER"] = "deepseek"
-os.environ["ARIADNE_DEEPSEEK_API_KEY"] = "sk-f3169cb3c827406d818f8518d645ea4d"
-os.environ["ARIADNE_DEEPSEEK_BASE_URL"] = "https://api.deepseek.com"
-os.environ["ARIADNE_DEEPSEEK_MODEL"] = "deepseek-chat"
+# Check for required API keys
+DEEPSEEK_KEY = os.environ.get("ARIADNE_DEEPSEEK_API_KEY")
+OPENAI_KEY = os.environ.get("ARIADNE_OPENAI_API_KEY")
 
-# Configure embedder to use SiliconFlow via OpenAI-compatible endpoint
-os.environ["ARIADNE_OPENAI_API_KEY"] = "sk-eevkkfebgwpjrcyxjllfyfpiqtvhzrjsmbjmvmeomvzeonnr"
-os.environ["ARIADNE_OPENAI_BASE_URL"] = "https://api.siliconflow.cn/v1"
-os.environ["ARIADNE_OPENAI_EMBEDDING_MODEL"] = "BAAI/bge-m3"
+if not DEEPSEEK_KEY:
+    print("WARNING: ARIADNE_DEEPSEEK_API_KEY not set. Skipping DeepSeek tests.")
+if not OPENAI_KEY:
+    print("WARNING: ARIADNE_OPENAI_API_KEY not set. Skipping embedding tests.")
+
+# Configure to use DeepSeek (only if key is available)
+if DEEPSEEK_KEY:
+    os.environ["ARIADNE_LLM_PROVIDER"] = "deepseek"
+    os.environ["ARIADNE_DEEPSEEK_BASE_URL"] = "https://api.deepseek.com"
+    os.environ["ARIADNE_DEEPSEEK_MODEL"] = "deepseek-chat"
+
+# Configure embedder (only if key is available)
+if OPENAI_KEY:
+    os.environ["ARIADNE_OPENAI_BASE_URL"] = "https://api.siliconflow.cn/v1"
+    os.environ["ARIADNE_OPENAI_EMBEDDING_MODEL"] = "BAAI/bge-m3"
 
 from ariadne_llm import LLMConfig, LLMProvider, create_embedder, create_llm_client
 from ariadne_llm.config import DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL
@@ -28,11 +38,15 @@ from ariadne_llm.config import DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL
 
 def test_llm_config():
     """Test LLM config loading."""
+    if not DEEPSEEK_KEY:
+        print("Skipping test_llm_config - ARIADNE_DEEPSEEK_API_KEY not set")
+        return
+
     print("Testing LLM Config...")
     config = LLMConfig.from_env()
 
     print(f"  Provider: {config.provider}")
-    print(f"  API Key: {config.api_key[:20]}...")
+    print(f"  API Key: {'*' * 10} (configured)")
     print(f"  Base URL: {config.base_url}")
     print(f"  Model: {config.model}")
     print(f"  Embedding Model: {config.embedding_model}")
@@ -45,6 +59,10 @@ def test_llm_config():
 
 def test_llm_client():
     """Test LLM client with actual API call."""
+    if not DEEPSEEK_KEY:
+        print("Skipping test_llm_client - ARIADNE_DEEPSEEK_API_KEY not set")
+        return
+
     print("Testing LLM Client...")
 
     config = LLMConfig.from_env()
@@ -85,6 +103,10 @@ def test_llm_client():
 
 def test_llm_batch_summaries():
     """Test batch summary generation."""
+    if not DEEPSEEK_KEY:
+        print("Skipping test_llm_batch_summaries - ARIADNE_DEEPSEEK_API_KEY not set")
+        return
+
     print("Testing Batch Summaries...")
 
     config = LLMConfig.from_env()
@@ -122,12 +144,16 @@ def test_llm_batch_summaries():
 
 def test_embedder():
     """Test embedder with actual API call."""
+    if not OPENAI_KEY:
+        print("Skipping test_embedder - ARIADNE_OPENAI_API_KEY not set")
+        return
+
     print("Testing Embedder...")
 
     # Use OpenAI-compatible endpoint for SiliconFlow
     config = LLMConfig(
         provider=LLMProvider.OPENAI,
-        api_key="sk-eevkkfebgwpjrcyxjllfyfpiqtvhzrjsmbjmvmeomvzeonnr",
+        api_key=OPENAI_KEY,
         base_url="https://api.siliconflow.cn/v1",
         embedding_model="BAAI/bge-m3",
     )
@@ -193,6 +219,10 @@ def test_vector_store():
 
 def test_hierarchical_summarizer():
     """Test hierarchical summarizer."""
+    if not DEEPSEEK_KEY:
+        print("Skipping test_hierarchical_summarizer - ARIADNE_DEEPSEEK_API_KEY not set")
+        return
+
     print("Testing Hierarchical Summarizer...")
 
     from ariadne_analyzer.l1_business import HierarchicalSummarizer

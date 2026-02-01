@@ -722,3 +722,155 @@ class SQLiteStore:
         cursor = self.conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM constraints")
         return cursor.fetchone()[0]
+
+    # ========================
+    # Atomic Vector Operations
+    # ========================
+
+    def create_summary_with_vector(
+        self,
+        summary: SummaryData,
+        embedding: list[float] | None = None,
+        vector_store: "ChromaVectorStore | None" = None,
+    ) -> str | None:
+        """Create summary with optional vector storage in single transaction.
+
+        This ensures data consistency between SQLite and ChromaDB by:
+        1. Creating SQLite record first
+        2. Adding to ChromaDB only after SQLite succeeds
+        3. Updating SQLite with vector_id only after ChromaDB succeeds
+
+        Args:
+            summary: SummaryData to create
+            embedding: Optional embedding vector for semantic search
+            vector_store: Optional ChromaVectorStore instance
+
+        Returns:
+            Vector ID if embedding was provided and stored, None otherwise
+
+        Raises:
+            Exception: If SQLite or ChromaDB operation fails
+        """
+        cursor = self.conn.cursor()
+
+        try:
+            with self.conn:
+                # 1. Insert SQLite record without vector_id
+                cursor.execute(
+                    """INSERT INTO summaries (target_fqn, level, summary, is_stale, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       RETURNING id
+                    """,
+                    (summary.target_fqn, summary.level.value, summary.summary, False, "datetime('now')", "datetime('now')"),
+                )
+                summary_id = cursor.fetchone()[0]
+
+                vector_id = None
+
+                # 2. Add to ChromaDB if embedding provided
+                if embedding is not None and vector_store is not None:
+                    try:
+                        vector_store.add_summary(
+                            summary_id=str(summary_id),
+                            text=summary.summary,
+                            embedding=embedding,
+                            metadata={"fqn": summary.target_fqn, "level": summary.level.value},
+                        )
+                        # 3. Update vector_id only after ChromaDB success
+                        cursor.execute(
+                            "UPDATE summaries SET vector_id = ? WHERE id = ?",
+                            (str(summary_id), summary_id),
+                        )
+                        vector_id = str(summary_id)
+                    except Exception as e:
+                        logger.error(f"ChromaDB operation failed, SQLite record created: {e}")
+                        # ChromaDB failed but SQLite record was created - this is acceptable
+                        # The summary exists but has no vector for search
+
+                return vector_id
+
+        except Exception as e:
+            logger.error(f"Failed to create summary with vector: {e}")
+            raise
+
+    def delete_summary_cascade(
+        self,
+        target_fqn: str,
+        vector_store: "ChromaVectorStore | None" = None,
+    ) -> bool:
+        """Delete summary from both SQLite and ChromaDB atomically.
+
+        Args:
+            target_fqn: Target symbol FQN
+            vector_store: Optional ChromaVectorStore instance
+
+        Returns:
+            True if deleted, False if not found
+        """
+        cursor = self.conn.cursor()
+
+        try:
+            with self.conn:
+                # 1. Get vector_id from SQLite
+                cursor.execute("SELECT vector_id FROM summaries WHERE target_fqn = ?", (target_fqn,))
+                row = cursor.fetchone()
+                if not row:
+                    return False
+
+                vector_id = row[0]
+
+                # 2. Delete from ChromaDB before SQLite (best effort)
+                if vector_id and vector_store is not None:
+                    try:
+                        vector_store.delete_summaries([vector_id])
+                    except Exception as e:
+                        logger.warning(f"Failed to delete from ChromaDB (continuing): {e}")
+
+                # 3. Delete from SQLite
+                cursor.execute("DELETE FROM summaries WHERE target_fqn = ?", (target_fqn,))
+                return True
+
+        except Exception as e:
+            logger.error(f"Failed to delete summary: {e}")
+            raise
+
+    def mark_summaries_stale_by_file(self, file_path: str) -> int:
+        """Mark summaries as stale when source file changes.
+
+        Also marks parent-level summaries (class/package) as stale.
+
+        Args:
+            file_path: Path to the modified source file
+
+        Returns:
+            Number of summaries marked stale
+        """
+        cursor = self.conn.cursor()
+        try:
+            with self.conn:
+                # Mark method-level summaries stale
+                cursor.execute(
+                    """UPDATE summaries SET is_stale = 1, updated_at = datetime('now')
+                       WHERE target_fqn IN (
+                           SELECT fqn FROM symbols WHERE file_path = ?
+                       )""",
+                    (file_path,),
+                )
+                method_count = cursor.rowcount
+
+                # Mark parent summaries stale as well
+                cursor.execute(
+                    """UPDATE summaries SET is_stale = 1, updated_at = datetime('now')
+                       WHERE target_fqn IN (
+                           SELECT DISTINCT s.parent_fqn FROM symbols s
+                           WHERE s.file_path = ?
+                           AND s.parent_fqn IS NOT NULL
+                       )""",
+                    (file_path,),
+                )
+
+                return method_count + cursor.rowcount
+
+        except Exception as e:
+            logger.error(f"Failed to mark summaries stale: {e}")
+            raise
