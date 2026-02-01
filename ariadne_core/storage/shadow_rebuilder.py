@@ -290,7 +290,19 @@ class ShadowRebuilder:
     def _atomic_swap_databases(
         self, current: str, new: str, backup_suffix: str
     ) -> None:
-        """Atomically swap database files.
+        """Atomically swap database files using three-way swap.
+
+        This implementation ensures there is never a window where no valid database
+        exists by using a temporary intermediate file and os.replace() which is
+        atomic on both POSIX and Windows.
+
+        Process:
+        1. Rename new -> temp (atomic)
+        2. Rename current -> backup (atomic)
+        3. Rename temp -> current (atomic)
+        4. Verify current exists
+
+        At any point, at least one valid database exists.
 
         Args:
             current: Path to current database file
@@ -300,43 +312,150 @@ class ShadowRebuilder:
         Raises:
             IOError: If swap fails and rollback is needed
         """
-        # Check current exists
-        current_exists = os.path.exists(current)
         backup_path = current + backup_suffix
+        temp_path = current + ".tmp_swap"
+        current_exists = os.path.exists(current)
+
+        # Clean up any leftover temp file from previous failed swap
+        if os.path.exists(temp_path):
+            logger.info(f"Cleaning up leftover temp file: {temp_path}")
+            try:
+                os.remove(temp_path)
+            except OSError as e:
+                logger.warning(f"Failed to remove temp file: {e}")
 
         try:
-            # Step 1: Rename current to backup (if it exists)
+            # Step 1: Move new database to temp location (atomic with os.replace)
+            logger.info(f"Moving new database to temp: {new} -> {temp_path}")
+            os.replace(new, temp_path)
+
+            # Step 2: Move current database to backup location (atomic)
             if current_exists:
-                logger.info(f"Backing up current database to {backup_path}")
-                os.rename(current, backup_path)
+                logger.info(f"Backing up current database: {current} -> {backup_path}")
+                os.replace(current, backup_path)
 
-            # Step 2: Rename new to current
-            logger.info(f"Moving new database to {current}")
-            os.rename(new, current)
+            # Step 3: Move temp database to current location (atomic)
+            logger.info(f"Moving temp database to current: {temp_path} -> {current}")
+            os.replace(temp_path, current)
 
-            # Step 3: Verify swap succeeded
+            # Verify: A valid database must exist at current path
             if not os.path.exists(current):
-                # Rollback: restore backup
-                if os.path.exists(backup_path):
-                    logger.warning("Swap failed, rolling back from backup")
-                    os.rename(backup_path, current)
-                raise IOError("Database swap failed - new database not in place")
+                # This should never happen with os.replace, but handle it
+                raise IOError(f"Swap verification failed: no database at {current}")
 
-            logger.info("Atomic swap completed successfully")
+            logger.info(
+                "Atomic swap completed successfully",
+                extra={
+                    "event": "swap_complete",
+                    "current": current,
+                    "backup": backup_path,
+                }
+            )
 
         except Exception as e:
-            # Rollback on any error
-            logger.error(f"Atomic swap failed: {e}")
+            # Attempt recovery from whichever valid database exists
+            logger.error(f"Atomic swap failed, attempting recovery: {e}")
 
-            # Try to restore backup if it was moved
-            if os.path.exists(backup_path) and not os.path.exists(current):
+            # Recovery priority: temp > backup > new
+            recovered = False
+
+            if os.path.exists(temp_path):
+                logger.info("Recovering from temp database")
                 try:
-                    os.rename(backup_path, current)
-                    logger.info("Restored backup after failed swap")
-                except OSError as rollback_error:
-                    logger.error(f"Failed to restore backup: {rollback_error}")
+                    if os.path.exists(current):
+                        os.remove(current)
+                    os.replace(temp_path, current)
+                    recovered = True
+                except OSError as recovery_error:
+                    logger.error(f"Failed to recover from temp: {recovery_error}")
 
-            raise IOError(f"Database swap failed: {e}") from e
+            elif os.path.exists(backup_path):
+                logger.info("Recovering from backup database")
+                try:
+                    if os.path.exists(current):
+                        os.remove(current)
+                    os.replace(backup_path, current)
+                    recovered = True
+                except OSError as recovery_error:
+                    logger.error(f"Failed to recover from backup: {recovery_error}")
+
+            elif os.path.exists(new):
+                logger.info("Recovering from new database")
+                try:
+                    if os.path.exists(current):
+                        os.remove(current)
+                    os.replace(new, current)
+                    recovered = True
+                except OSError as recovery_error:
+                    logger.error(f"Failed to recover from new: {recovery_error}")
+
+            if not recovered or not os.path.exists(current):
+                raise IOError(
+                    f"Catastrophic swap failure: no valid database found. "
+                    f"Manual recovery required. Paths checked: current={current}, "
+                    f"temp={temp_path}, backup={backup_path}, new={new}"
+                ) from e
+
+            logger.info("Recovery completed successfully")
+
+    def _check_and_recover_swap_incomplete(self, current: str, backup_suffix: str) -> bool:
+        """Check if previous swap was incomplete and recover automatically.
+
+        This should be called on SQLiteStore initialization to ensure the database
+        is in a valid state after a potential crash during swap.
+
+        Args:
+            current: Path to current database file
+            backup_suffix: Suffix used for backup files
+
+        Returns:
+            True if recovery was performed, False otherwise
+        """
+        backup_path = current + backup_suffix
+        temp_path = current + ".tmp_swap"
+
+        # Check for incomplete swap indicators
+        current_exists = os.path.exists(current)
+        backup_exists = os.path.exists(backup_path)
+        temp_exists = os.path.exists(temp_path)
+
+        # Case 1: current doesn't exist but backup does (main recovery scenario)
+        if not current_exists and backup_exists:
+            logger.warning(
+                f"Detected incomplete swap: current missing, backup exists. Recovering.",
+                extra={"event": "swap_recovery", "backup": backup_path}
+            )
+            try:
+                os.replace(backup_path, current)
+                logger.info("Recovery from backup completed")
+                return True
+            except OSError as e:
+                logger.error(f"Failed to recover from backup: {e}")
+                return False
+
+        # Case 2: temp exists but current doesn't (race window scenario)
+        if not current_exists and temp_exists:
+            logger.warning(
+                f"Detected incomplete swap: current missing, temp exists. Recovering.",
+                extra={"event": "swap_recovery", "temp": temp_path}
+            )
+            try:
+                os.replace(temp_path, current)
+                logger.info("Recovery from temp completed")
+                return True
+            except OSError as e:
+                logger.error(f"Failed to recover from temp: {e}")
+                return False
+
+        # Case 3: temp still exists (previous swap failed, need cleanup)
+        if temp_exists:
+            logger.info(f"Cleaning up leftover temp file from previous swap: {temp_path}")
+            try:
+                os.remove(temp_path)
+            except OSError as e:
+                logger.warning(f"Failed to remove temp file: {e}")
+
+        return False
 
     def _schedule_backup_cleanup(self, backup_path: str) -> None:
         """Schedule cleanup of old backup database.

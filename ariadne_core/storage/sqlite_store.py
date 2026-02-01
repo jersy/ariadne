@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from threading import local
 from typing import Any
@@ -38,6 +39,65 @@ class SQLiteStore:
             self._rebuild_schema()
         else:
             self._ensure_schema()
+
+        # Check and recover from incomplete swap (if crashed during rebuild)
+        self._check_and_recover_swap_incomplete()
+
+    def _check_and_recover_swap_incomplete(self) -> bool:
+        """Check if previous shadow rebuild swap was incomplete and recover.
+
+        This should be called on initialization to ensure the database is in a
+        valid state after a potential crash during shadow rebuild.
+
+        Returns:
+            True if recovery was performed, False otherwise
+        """
+        backup_suffix = "_backup"
+        backup_path = self.db_path + backup_suffix
+        temp_path = self.db_path + ".tmp_swap"
+
+        # Check for incomplete swap indicators
+        current_exists = os.path.exists(self.db_path)
+        backup_exists = os.path.exists(backup_path)
+        temp_exists = os.path.exists(temp_path)
+
+        # Case 1: current doesn't exist but backup does (main recovery scenario)
+        if not current_exists and backup_exists:
+            logger.warning(
+                f"Detected incomplete swap: current missing, backup exists. Recovering.",
+                extra={"event": "swap_recovery", "backup": backup_path}
+            )
+            try:
+                os.replace(backup_path, self.db_path)
+                logger.info("Recovery from backup completed")
+                return True
+            except OSError as e:
+                logger.error(f"Failed to recover from backup: {e}")
+                return False
+
+        # Case 2: temp exists but current doesn't (race window scenario)
+        if not current_exists and temp_exists:
+            logger.warning(
+                f"Detected incomplete swap: current missing, temp exists. Recovering.",
+                extra={"event": "swap_recovery", "temp": temp_path}
+            )
+            try:
+                os.replace(temp_path, self.db_path)
+                logger.info("Recovery from temp completed")
+                return True
+            except OSError as e:
+                logger.error(f"Failed to recover from temp: {e}")
+                return False
+
+        # Case 3: temp still exists (previous swap failed, need cleanup)
+        if temp_exists:
+            logger.info(f"Cleaning up leftover temp file from previous swap: {temp_path}")
+            try:
+                os.remove(temp_path)
+            except OSError as e:
+                logger.warning(f"Failed to remove temp file: {e}")
+
+        return False
 
     @property
     def conn(self):
@@ -82,6 +142,25 @@ class SQLiteStore:
 
     def _run_migrations(self) -> None:
         """Run pending database migrations."""
+        self._run_migrations_impl(dry_run=False)
+
+    def preview_migrations(self) -> dict[str, Any]:
+        """Preview pending migrations without applying them.
+
+        Returns:
+            Dictionary with migration results for each pending migration
+        """
+        return self._run_migrations_impl(dry_run=True)
+
+    def _run_migrations_impl(self, dry_run: bool = False) -> dict[str, Any]:
+        """Run or preview pending database migrations.
+
+        Args:
+            dry_run: If True, only report what would happen without applying changes
+
+        Returns:
+            Dictionary with results from each migration (only when dry_run=True)
+        """
         # Get applied migrations
         cursor = self.conn.cursor()
 
@@ -97,43 +176,70 @@ class SQLiteStore:
         cursor.execute("SELECT version FROM _migrations ORDER BY version")
         applied = {row[0] for row in cursor.fetchall()}
 
+        results = {}
+
         # Run pending migrations
         for migration in migrations.ALL_MIGRATIONS:
             if migration["version"] not in applied:
                 logger.info(
-                    f"Running migration {migration['version']}: {migration['name']}",
+                    f"{'[DRY-RUN] ' if dry_run else ''}Running migration {migration['version']}: {migration['name']}",
                     extra={
                         "event": "migration_start",
                         "version": migration["version"],
                         "migration_name": migration["name"],
+                        "dry_run": dry_run,
                     }
                 )
                 try:
-                    migration["upgrade"](self.conn)
-                    # Record migration
-                    cursor.execute(
-                        "INSERT INTO _migrations (version) VALUES (?)",
-                        (migration["version"],)
-                    )
-                    self.conn.commit()
-                    logger.info(
-                        f"Migration {migration['version']} completed",
-                        extra={
-                            "event": "migration_complete",
-                            "version": migration["version"],
-                        }
-                    )
+                    # Call upgrade with dry_run parameter
+                    migration_result = migration["upgrade"](self.conn, dry_run=dry_run)
+
+                    # Record migration (only if not dry_run)
+                    if not dry_run:
+                        cursor.execute(
+                            "INSERT INTO _migrations (version) VALUES (?)",
+                            (migration["version"],)
+                        )
+                        self.conn.commit()
+                        logger.info(
+                            f"Migration {migration['version']} completed",
+                            extra={
+                                "event": "migration_complete",
+                                "version": migration["version"],
+                            }
+                        )
+                    else:
+                        # In dry-run mode, return the results
+                        results[migration["version"]] = migration_result
+
                 except Exception as e:
-                    self.conn.rollback()
-                    logger.error(
-                        f"Migration {migration['version']} failed: {e}",
-                        extra={
-                            "event": "migration_failed",
-                            "version": migration["version"],
+                    if not dry_run:
+                        self.conn.rollback()
+                        logger.error(
+                            f"Migration {migration['version']} failed: {e}",
+                            extra={
+                                "event": "migration_failed",
+                                "version": migration["version"],
+                                "error": str(e),
+                            }
+                        )
+                        raise
+                    else:
+                        # In dry-run mode, just record the error and continue
+                        results[migration["version"]] = {
                             "error": str(e),
+                            "status": "failed"
                         }
-                    )
-                    raise
+                        logger.warning(
+                            f"[DRY-RUN] Migration {migration['version']} would fail: {e}",
+                            extra={
+                                "event": "migration_dry_run_failed",
+                                "version": migration["version"],
+                                "error": str(e),
+                            }
+                        )
+
+        return results
 
     # ========================
     # Symbol CRUD
@@ -1025,21 +1131,12 @@ class SQLiteStore:
                         extra={"event": "chroma_rollback", "vector_id": vector_id}
                     )
                 except Exception as rollback_error:
-                    logger.error(
+                    logger.critical(
                         f"Failed to rollback ChromaDB vector {vector_id}: {rollback_error}",
                         extra={"event": "chroma_rollback_failed", "vector_id": vector_id}
                     )
-                    # Track orphaned vector for later cleanup
-                    try:
-                        cursor.execute(
-                            """INSERT INTO pending_vectors (temp_id, operation_type, sqlite_table, payload, vector_id, error_message)
-                               VALUES (?, 'delete', 'summaries', ?, ?, ?)
-                            """,
-                            (vector_id, json.dumps({"fqn": summary.target_fqn}), vector_id, str(rollback_error)),
-                        )
-                        self.conn.commit()
-                    except Exception:
-                        pass  # Best effort tracking
+                    # Track orphaned vector in SEPARATE transaction (outside rollback context)
+                    self._track_orphaned_vector_separate_txn(vector_id, summary.target_fqn, rollback_error, e)
 
             raise
 
@@ -1288,6 +1385,74 @@ class SQLiteStore:
             raise
 
         return stats
+
+    def _track_orphaned_vector_separate_txn(
+        self,
+        vector_id: str,
+        target_fqn: str,
+        rollback_error: Exception,
+        original_error: Exception,
+    ) -> None:
+        """Track an orphaned vector in a separate transaction (outside rollback context).
+
+        This is called when the two-phase commit fails and we need to track
+        an orphaned ChromaDB vector for later cleanup. Using a separate
+        database connection ensures the tracking survives the main transaction rollback.
+
+        Args:
+            vector_id: The vector_id that was written to ChromaDB
+            target_fqn: The target symbol FQN
+            rollback_error: The error from ChromaDB rollback attempt
+            original_error: The original SQLite write error
+        """
+        import sqlite3
+        from datetime import datetime
+
+        try:
+            # Create a new database connection (outside the rolled-back transaction)
+            tracking_conn = sqlite3.connect(self.db_path, timeout=30.0)
+            try:
+                tracking_conn.execute("BEGIN IMMEDIATE")
+
+                # Insert tracking record with detailed error information
+                tracking_conn.execute(
+                    """INSERT INTO pending_vectors (temp_id, operation_type, sqlite_table, payload, vector_id, error_message, created_at)
+                       VALUES (?, 'delete', 'summaries', ?, ?, ?)
+                    """,
+                    (
+                        vector_id,
+                        json.dumps({
+                            "fqn": target_fqn,
+                            "original_error": str(original_error),
+                            "rollback_error": str(rollback_error),
+                            "tracking_time": datetime.utcnow().isoformat(),
+                        }),
+                        vector_id,
+                        f"Orphan after rollback: {rollback_error}",
+                    ),
+                )
+                tracking_conn.commit()
+
+                logger.info(
+                    f"Tracked orphaned vector {vector_id} for later cleanup",
+                    extra={"event": "orphan_tracked", "vector_id": vector_id, "target_fqn": target_fqn}
+                )
+
+            finally:
+                tracking_conn.close()
+
+        except Exception as tracking_error:
+            # This is critical - if we can't track, we need to log at CRITICAL level
+            logger.critical(
+                f"CRITICAL: Failed to track orphaned vector {vector_id}. "
+                f"Manual cleanup required. Original error: {original_error}, "
+                f"Rollback error: {rollback_error}, Tracking error: {tracking_error}",
+                extra={
+                    "event": "orphan_tracking_failed",
+                    "vector_id": vector_id,
+                    "target_fqn": target_fqn,
+                }
+            )
 
     def get_pending_sync_operations(self) -> list[dict[str, Any]]:
         """Get pending sync operations that may need recovery.

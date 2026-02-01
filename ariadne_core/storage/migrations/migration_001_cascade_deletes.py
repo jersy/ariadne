@@ -5,10 +5,16 @@ This migration ensures data integrity by:
 2. Ensuring foreign keys have ON DELETE CASCADE
 3. Cleaning up orphaned records
 
+IMPORTANT: This migration will DELETE orphaned records. Run with dry_run=True
+first to preview what will be deleted. Deleted records are backed up to
+_deleted_orphans_backup_001 table for potential recovery.
+
 Related issue: 018-pending-p1-cascade-delete-orphaned-edges.md
 """
 
+import json
 import logging
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -19,43 +25,73 @@ name = "cascade_deletes"
 description = "Add ON DELETE CASCADE triggers and cleanup orphaned records"
 
 
-def upgrade(conn: Any) -> None:
+def upgrade(conn: Any, dry_run: bool = False) -> dict[str, int]:
     """Apply migration to add cascade delete behavior.
+
+    IMPORTANT: Run with dry_run=True first to preview what will be deleted.
+    Deleted records are backed up to _deleted_orphans_backup_001 table.
 
     Args:
         conn: SQLite connection object
+        dry_run: If True, only report what would be deleted without deleting
+
+    Returns:
+        Dictionary with counts of orphaned records found/deleted
     """
     cursor = conn.cursor()
+
+    logger.info(
+        f"Running migration {version} with dry_run={dry_run}",
+        extra={"migration": version, "dry_run": dry_run}
+    )
 
     # Enable foreign keys
     cursor.execute("PRAGMA foreign_keys = ON")
 
-    # 1. Add cascade delete triggers for edges table
+    # 1. Add cascade delete triggers for edges table (safe, no data loss)
     _create_edges_triggers(cursor)
 
-    # 2. Clean up orphaned records
-    orphaned_counts = _cleanup_orphaned_records(cursor)
+    # 2. Clean up orphaned records (with dry-run support)
+    orphaned_counts = _cleanup_orphaned_records(cursor, dry_run=dry_run)
 
     # 3. Ensure foreign keys have CASCADE for L2/L1 tables
     _ensure_cascade_constraints(cursor)
 
-    conn.commit()
+    # Only commit if not in dry-run mode
+    if not dry_run:
+        conn.commit()
+    else:
+        conn.rollback()  # Explicit rollback to make intent clear
 
     # Log results
     if orphaned_counts:
         total_orphans = sum(orphaned_counts.values())
-        logger.info(
-            f"Migration {version} completed: cleaned up {total_orphans} orphaned records",
-            extra={
-                "migration": version,
-                "orphaned_counts": orphaned_counts,
-            }
-        )
+        if dry_run:
+            logger.info(
+                f"[DRY-RUN] Migration {version}: would delete {total_orphans} orphaned records",
+                extra={
+                    "migration": version,
+                    "dry_run": True,
+                    "would_delete": total_orphans,
+                    "orphaned_counts": orphaned_counts,
+                }
+            )
+        else:
+            logger.info(
+                f"Migration {version} completed: deleted {total_orphans} orphaned records",
+                extra={
+                    "migration": version,
+                    "deleted": total_orphans,
+                    "orphaned_counts": orphaned_counts,
+                }
+            )
     else:
         logger.info(
             f"Migration {version} completed: no orphaned records found",
             extra={"migration": version}
         )
+
+    return orphaned_counts
 
 
 def _create_edges_triggers(cursor: Any) -> None:
@@ -88,131 +124,233 @@ def _create_edges_triggers(cursor: Any) -> None:
     """)
 
 
-def _cleanup_orphaned_records(cursor: Any) -> dict[str, int]:
+def _cleanup_orphaned_records(cursor: Any, dry_run: bool = False) -> dict[str, int]:
     """Clean up orphaned records across all tables.
+
+    IMPORTANT: This will DELETE data. Run with dry_run=True first to preview.
+
+    Args:
+        cursor: SQLite cursor
+        dry_run: If True, only report what would be deleted without deleting
 
     Returns:
         Dictionary with table names and orphaned counts
     """
     orphaned_counts = {}
+    backup_table = "_deleted_orphans_backup_001"
+
+    # Create backup table if not exists (only when not in dry-run mode)
+    if not dry_run:
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {backup_table} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                table_name TEXT NOT NULL,
+                record_id TEXT NOT NULL,
+                record_data JSON,
+                deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        logger.info(f"Created backup table: {backup_table}")
+
+    # Helper function to backup and delete orphaned records
+    def _backup_and_delete_orphans(
+        table_name: str,
+        id_column: str,
+        where_clause: str,
+        count_query: str,
+        data_query: str,
+    ) -> int:
+        """Backup and delete orphaned records for a table.
+
+        Args:
+            table_name: Name of the table
+            id_column: Primary key column name
+            where_clause: WHERE clause to find orphans
+            count_query: Query to count orphans
+            data_query: Query to select orphan data for backup
+
+        Returns:
+            Number of orphans deleted (or would be deleted in dry-run)
+        """
+        # Count orphans
+        cursor.execute(count_query)
+        orphan_count = cursor.fetchone()[0]
+
+        if orphan_count == 0:
+            return 0
+
+        if dry_run:
+            logger.info(f"[DRY-RUN] Would delete {orphan_count} orphaned records from {table_name}")
+            return orphan_count
+
+        # Backup the records
+        cursor.execute(f"""
+            INSERT INTO {backup_table} (table_name, record_id, record_data, deleted_at)
+            SELECT '{table_name}',
+                   {id_column},
+                   json_object(
+                       'data', json({data_query})
+                   ),
+                   datetime('now')
+            FROM ({data_query}) AS orphan_data
+        """)
+
+        # Delete the records
+        cursor.execute(f"DELETE FROM {table_name} WHERE {where_clause}")
+        deleted_count = cursor.rowcount
+
+        logger.info(f"Deleted {deleted_count} orphaned records from {table_name}, backed up to {backup_table}")
+        return deleted_count
 
     # Check and clean orphaned edges (from side)
-    cursor.execute("""
-        SELECT COUNT(*) FROM edges e
-        LEFT JOIN symbols s ON e.from_fqn = s.fqn
-        WHERE s.fqn IS NULL
-    """)
-    orphaned_edge_from = cursor.fetchone()[0]
-    if orphaned_edge_from > 0:
-        cursor.execute("""
-            DELETE FROM edges WHERE from_fqn NOT IN (SELECT fqn FROM symbols)
-        """)
-        orphaned_counts["edges_from"] = orphaned_edge_from
+    orphaned_counts["edges_from"] = _backup_and_delete_orphans(
+        table_name="edges",
+        id_column="'from_fqn' || ':' || 'to_fqn' || ':' || relation",
+        where_clause="from_fqn NOT IN (SELECT fqn FROM symbols)",
+        count_query="""
+            SELECT COUNT(*) FROM edges e
+            LEFT JOIN symbols s ON e.from_fqn = s.fqn
+            WHERE s.fqn IS NULL
+        """,
+        data_query="""
+            SELECT from_fqn, to_fqn, relation, id
+            FROM edges e
+            LEFT JOIN symbols s ON e.from_fqn = s.fqn
+            WHERE s.fqn IS NULL
+        """,
+    )
 
     # Check and clean orphaned edges (to side)
-    cursor.execute("""
-        SELECT COUNT(*) FROM edges e
-        LEFT JOIN symbols s ON e.to_fqn = s.fqn
-        WHERE s.fqn IS NULL
-    """)
-    orphaned_edge_to = cursor.fetchone()[0]
-    if orphaned_edge_to > 0:
-        cursor.execute("""
-            DELETE FROM edges WHERE to_fqn NOT IN (SELECT fqn FROM symbols)
-        """)
-        orphaned_counts["edges_to"] = orphaned_edge_to
+    orphaned_counts["edges_to"] = _backup_and_delete_orphans(
+        table_name="edges",
+        id_column="'from_fqn' || ':' || 'to_fqn' || ':' || relation",
+        where_clause="to_fqn NOT IN (SELECT fqn FROM symbols)",
+        count_query="""
+            SELECT COUNT(*) FROM edges e
+            LEFT JOIN symbols s ON e.to_fqn = s.fqn
+            WHERE s.fqn IS NULL
+        """,
+        data_query="""
+            SELECT from_fqn, to_fqn, relation, id
+            FROM edges e
+            LEFT JOIN symbols s ON e.to_fqn = s.fqn
+            WHERE s.fqn IS NULL
+        """,
+    )
 
     # Check and clean orphaned entry_points (if table exists)
     if _table_exists(cursor, "entry_points"):
-        cursor.execute("""
-            SELECT COUNT(*) FROM entry_points ep
-            LEFT JOIN symbols s ON ep.symbol_fqn = s.fqn
-            WHERE s.fqn IS NULL
-        """)
-        orphaned = cursor.fetchone()[0]
-        if orphaned > 0:
-            cursor.execute("""
-                DELETE FROM entry_points
-                WHERE symbol_fqn NOT IN (SELECT fqn FROM symbols)
-            """)
-            orphaned_counts["entry_points"] = orphaned
+        orphaned_counts["entry_points"] = _backup_and_delete_orphans(
+            table_name="entry_points",
+            id_column="symbol_fqn",
+            where_clause="symbol_fqn NOT IN (SELECT fqn FROM symbols)",
+            count_query="""
+                SELECT COUNT(*) FROM entry_points ep
+                LEFT JOIN symbols s ON ep.symbol_fqn = s.fqn
+                WHERE s.fqn IS NULL
+            """,
+            data_query="""
+                SELECT symbol_fqn, entry_type, id
+                FROM entry_points ep
+                LEFT JOIN symbols s ON ep.symbol_fqn = s.fqn
+                WHERE s.fqn IS NULL
+            """,
+        )
 
     # Check and clean orphaned external_dependencies (if table exists)
     if _table_exists(cursor, "external_dependencies"):
-        cursor.execute("""
-            SELECT COUNT(*) FROM external_dependencies ed
-            LEFT JOIN symbols s ON ed.caller_fqn = s.fqn
-            WHERE s.fqn IS NULL
-        """)
-        orphaned = cursor.fetchone()[0]
-        if orphaned > 0:
-            cursor.execute("""
-                DELETE FROM external_dependencies
-                WHERE caller_fqn NOT IN (SELECT fqn FROM symbols)
-            """)
-            orphaned_counts["external_dependencies"] = orphaned
+        orphaned_counts["external_dependencies"] = _backup_and_delete_orphans(
+            table_name="external_dependencies",
+            id_column="caller_fqn || ':' || target_fqn || ':' || dependency_type",
+            where_clause="caller_fqn NOT IN (SELECT fqn FROM symbols)",
+            count_query="""
+                SELECT COUNT(*) FROM external_dependencies ed
+                LEFT JOIN symbols s ON ed.caller_fqn = s.fqn
+                WHERE s.fqn IS NULL
+            """,
+            data_query="""
+                SELECT caller_fqn, target_fqn, dependency_type, id
+                FROM external_dependencies ed
+                LEFT JOIN symbols s ON ed.caller_fqn = s.fqn
+                WHERE s.fqn IS NULL
+            """,
+        )
 
     # Check and clean orphaned summaries (if table exists)
     if _table_exists(cursor, "summaries"):
-        cursor.execute("""
-            SELECT COUNT(*) FROM summaries sum
-            LEFT JOIN symbols s ON sum.target_fqn = s.fqn
-            WHERE s.fqn IS NULL
-        """)
-        orphaned = cursor.fetchone()[0]
-        if orphaned > 0:
-            cursor.execute("""
-                DELETE FROM summaries
-                WHERE target_fqn NOT IN (SELECT fqn FROM symbols)
-            """)
-            orphaned_counts["summaries"] = orphaned
+        orphaned_counts["summaries"] = _backup_and_delete_orphans(
+            table_name="summaries",
+            id_column="target_fqn",
+            where_clause="target_fqn NOT IN (SELECT fqn FROM symbols)",
+            count_query="""
+                SELECT COUNT(*) FROM summaries sum
+                LEFT JOIN symbols s ON sum.target_fqn = s.fqn
+                WHERE s.fqn IS NULL
+            """,
+            data_query="""
+                SELECT target_fqn, summary, vector_id, id
+                FROM summaries sum
+                LEFT JOIN symbols s ON sum.target_fqn = s.fqn
+                WHERE s.fqn IS NULL
+            """,
+        )
 
     # Check and clean orphaned glossary (if table exists)
     if _table_exists(cursor, "glossary"):
-        cursor.execute("""
-            SELECT COUNT(*) FROM glossary g
-            LEFT JOIN symbols s ON g.source_fqn = s.fqn
-            WHERE g.source_fqn IS NOT NULL AND s.fqn IS NULL
-        """)
-        orphaned = cursor.fetchone()[0]
-        if orphaned > 0:
-            cursor.execute("""
-                DELETE FROM glossary
-                WHERE source_fqn IS NOT NULL
-                AND source_fqn NOT IN (SELECT fqn FROM symbols)
-            """)
-            orphaned_counts["glossary"] = orphaned
+        orphaned_counts["glossary"] = _backup_and_delete_orphans(
+            table_name="glossary",
+            id_column="code_term",
+            where_clause="source_fqn IS NOT NULL AND source_fqn NOT IN (SELECT fqn FROM symbols)",
+            count_query="""
+                SELECT COUNT(*) FROM glossary g
+                LEFT JOIN symbols s ON g.source_fqn = s.fqn
+                WHERE g.source_fqn IS NOT NULL AND s.fqn IS NULL
+            """,
+            data_query="""
+                SELECT code_term, business_meaning, synonyms, source_fqn, id
+                FROM glossary g
+                LEFT JOIN symbols s ON g.source_fqn = s.fqn
+                WHERE g.source_fqn IS NOT NULL AND s.fqn IS NULL
+            """,
+        )
 
     # Check and clean orphaned constraints (if table exists)
     if _table_exists(cursor, "constraints"):
-        cursor.execute("""
-            SELECT COUNT(*) FROM constraints c
-            LEFT JOIN symbols s ON c.source_fqn = s.fqn
-            WHERE c.source_fqn IS NOT NULL AND s.fqn IS NULL
-        """)
-        orphaned = cursor.fetchone()[0]
-        if orphaned > 0:
-            cursor.execute("""
-                DELETE FROM constraints
-                WHERE source_fqn IS NOT NULL
-                AND source_fqn NOT IN (SELECT fqn FROM symbols)
-            """)
-            orphaned_counts["constraints"] = orphaned
+        orphaned_counts["constraints"] = _backup_and_delete_orphans(
+            table_name="constraints",
+            id_column="source_fqn || ':' || constraint_type",
+            where_clause="source_fqn IS NOT NULL AND source_fqn NOT IN (SELECT fqn FROM symbols)",
+            count_query="""
+                SELECT COUNT(*) FROM constraints c
+                LEFT JOIN symbols s ON c.source_fqn = s.fqn
+                WHERE c.source_fqn IS NOT NULL AND s.fqn IS NULL
+            """,
+            data_query="""
+                SELECT source_fqn, constraint_type, expression, id
+                FROM constraints c
+                LEFT JOIN symbols s ON c.source_fqn = s.fqn
+                WHERE c.source_fqn IS NOT NULL AND s.fqn IS NULL
+            """,
+        )
 
     # Check and clean orphaned anti_patterns (if table exists)
     if _table_exists(cursor, "anti_patterns"):
-        cursor.execute("""
-            SELECT COUNT(*) FROM anti_patterns ap
-            LEFT JOIN symbols s ON ap.from_fqn = s.fqn
-            WHERE s.fqn IS NULL
-        """)
-        orphaned = cursor.fetchone()[0]
-        if orphaned > 0:
-            cursor.execute("""
-                DELETE FROM anti_patterns
-                WHERE from_fqn NOT IN (SELECT fqn FROM symbols)
-            """)
-            orphaned_counts["anti_patterns"] = orphaned
+        orphaned_counts["anti_patterns"] = _backup_and_delete_orphans(
+            table_name="anti_patterns",
+            id_column="from_fqn || ':' || pattern_name",
+            where_clause="from_fqn NOT IN (SELECT fqn FROM symbols)",
+            count_query="""
+                SELECT COUNT(*) FROM anti_patterns ap
+                LEFT JOIN symbols s ON ap.from_fqn = s.fqn
+                WHERE s.fqn IS NULL
+            """,
+            data_query="""
+                SELECT from_fqn, pattern_name, severity, id
+                FROM anti_patterns ap
+                LEFT JOIN symbols s ON ap.from_fqn = s.fqn
+                WHERE s.fqn IS NULL
+            """,
+        )
 
     return orphaned_counts
 
