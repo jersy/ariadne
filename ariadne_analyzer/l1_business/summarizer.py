@@ -199,6 +199,11 @@ class HierarchicalSummarizer:
     ) -> list[SummaryData]:
         """Generate summaries for changed symbols incrementally.
 
+        .. deprecated::
+            Use IncrementalSummarizerCoordinator instead for new code.
+            This method is kept for backward compatibility but provides
+            less sophisticated incremental update capabilities.
+
         Args:
             changed_symbols: List of symbols that have changed
             symbol_source_map: Map from FQN to source code

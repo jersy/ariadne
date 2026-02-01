@@ -84,40 +84,31 @@ class ParallelSummarizer:
                 for fqn, code, ctx in items
             }
 
-            # Collect results with optional progress bar
+            # Process completed futures
+            pbar = None
             if show_progress:
                 try:
                     from tqdm import tqdm
-
-                    with tqdm(total=len(items), desc="Summarizing") as pbar:
-                        for future in as_completed(futures):
-                            fqn, _, _ = futures[future]
-                            try:
-                                summary = future.result(timeout=self.llm_client.config.request_timeout)
-                                results[fqn] = summary
-                            except Exception as e:
-                                logger.error(f"Failed to summarize {fqn}: {e}")
-                                # Generate fallback summary
-                                fallback = self._fallback_summary(fqn, futures[future][2])
-                                results[fqn] = fallback
-                                self._increment_failed()
-                            finally:
-                                pbar.update(1)
+                    pbar = tqdm(total=len(items), desc="Summarizing")
                 except ImportError:
-                    # tqdm not available, fall back to simple loop
-                    show_progress = False
+                    pass  # tqdm not available, continue without progress bar
 
-            if not show_progress:
-                for future in as_completed(futures):
-                    fqn, _, context = futures[future]
-                    try:
-                        summary = future.result(timeout=self.llm_client.config.request_timeout)
-                        results[fqn] = summary
-                    except Exception as e:
-                        logger.error(f"Failed to summarize {fqn}: {e}")
-                        fallback = self._fallback_summary(fqn, context)
-                        results[fqn] = fallback
-                        self._increment_failed()
+            for future in as_completed(futures):
+                fqn, _, context = futures[future]
+                try:
+                    summary = future.result(timeout=self.llm_client.config.request_timeout)
+                    results[fqn] = summary
+                except Exception as e:
+                    logger.error(f"Failed to summarize {fqn}: {e}")
+                    fallback = self._fallback_summary(fqn, context)
+                    results[fqn] = fallback
+                    self._increment_failed()
+                finally:
+                    if pbar:
+                        pbar.update(1)
+
+            if pbar:
+                pbar.close()
 
         # Calculate success count (safe to do outside the thread pool)
         with self._stats_lock:
@@ -133,11 +124,6 @@ class ParallelSummarizer:
         """Thread-safe increment of failed counter."""
         with self._stats_lock:
             self.stats["failed"] += 1
-
-    def _set_success_count(self, count: int) -> None:
-        """Thread-safe set of success counter."""
-        with self._stats_lock:
-            self.stats["success"] = count
 
     def _summarize_single(self, fqn: str, source_code: str, context: dict[str, Any]) -> str:
         """Summarize a single symbol (runs in worker thread).

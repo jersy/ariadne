@@ -108,37 +108,28 @@ class DependencyTracker:
             dependents=list(dependents),
         )
 
-    def get_callers(self, fqn: str, max_depth: int = 1) -> list[dict[str, Any]]:
-        """Get symbols that call the given symbol.
+    def get_callers(self, fqn: str) -> list[dict[str, Any]]:
+        """Get symbols that call the given symbol (1-hop only).
 
         Args:
             fqn: Target symbol FQN
-            max_depth: Maximum depth to traverse (1 for direct callers only)
 
         Returns:
             List of caller symbol dicts
         """
-        if max_depth != 1:
-            # For now, only support 1-hop
-            logger.warning("max_depth > 1 not yet supported, using 1-hop")
-
         return self.store.get_related_symbols(
             fqn, relation="calls", direction="incoming"
         )
 
-    def get_callees(self, fqn: str, max_depth: int = 1) -> list[dict[str, Any]]:
-        """Get symbols called by the given symbol.
+    def get_callees(self, fqn: str) -> list[dict[str, Any]]:
+        """Get symbols called by the given symbol (1-hop only).
 
         Args:
             fqn: Source symbol FQN
-            max_depth: Maximum depth to traverse (1 for direct callees only)
 
         Returns:
             List of callee symbol dicts
         """
-        if max_depth != 1:
-            logger.warning("max_depth > 1 not yet supported, using 1-hop")
-
         return self.store.get_related_symbols(
             fqn, relation="calls", direction="outgoing"
         )
