@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ariadne_core.models.types import (
     AntiPatternData,
@@ -63,15 +66,25 @@ class SQLiteStore:
     # ========================
 
     def insert_symbols(self, symbols: list[SymbolData]) -> int:
-        """Insert or replace symbols. Returns count inserted."""
+        """Insert or update symbols. Returns count inserted."""
         if not symbols:
             return 0
         cursor = self.conn.cursor()
         rows = [s.to_row() for s in symbols]
         cursor.executemany(
-            """INSERT OR REPLACE INTO symbols
+            """INSERT INTO symbols
                (fqn, kind, name, file_path, line_number, modifiers, signature, parent_fqn, annotations)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(fqn) DO UPDATE SET
+               kind = excluded.kind,
+               name = excluded.name,
+               file_path = excluded.file_path,
+               line_number = excluded.line_number,
+               modifiers = excluded.modifiers,
+               signature = excluded.signature,
+               parent_fqn = excluded.parent_fqn,
+               annotations = excluded.annotations,
+               updated_at = CURRENT_TIMESTAMP""",
             rows,
         )
         self.conn.commit()
@@ -274,14 +287,20 @@ class SQLiteStore:
     # ========================
 
     def insert_entry_points(self, entries: list[EntryPointData]) -> int:
-        """Insert entry points. Returns count inserted."""
+        """Insert or update entry points. Returns count inserted."""
         if not entries:
             return 0
         cursor = self.conn.cursor()
         cursor.executemany(
-            """INSERT OR REPLACE INTO entry_points
+            """INSERT INTO entry_points
                (symbol_fqn, entry_type, http_method, http_path, cron_expression, mq_queue)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(symbol_fqn) DO UPDATE SET
+               entry_type = excluded.entry_type,
+               http_method = excluded.http_method,
+               http_path = excluded.http_path,
+               cron_expression = excluded.cron_expression,
+               mq_queue = excluded.mq_queue""",
             [e.to_row() for e in entries],
         )
         self.conn.commit()

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ariadne_core.models.types import SymbolData, SymbolKind
 from ariadne_core.storage.vector_store import (
     COLLECTION_CONSTRAINTS,
     COLLECTION_GLOSSARY,
@@ -204,6 +205,16 @@ class TestVectorStoreIntegration:
         vector_store = ChromaVectorStore(vector_path)
 
         try:
+            # First, create a symbol that the summary references
+            symbol = SymbolData(
+                fqn="com.example.TestClass",
+                kind=SymbolKind.CLASS,
+                name="TestClass",
+                file_path="/test/Test.java",
+                line_number=10,
+            )
+            sqlite_store.insert_symbols([symbol])
+
             # Create a summary
             summary = SummaryData(
                 target_fqn="com.example.TestClass",
