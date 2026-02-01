@@ -10,9 +10,12 @@ import logging
 from typing import Any
 
 from ariadne_core.models.types import SummaryData, SummaryLevel, SymbolData, SymbolKind
+from ariadne_core.storage.sqlite_store import SQLiteStore
 from ariadne_llm import LLMClient, LLMConfig
 from ariadne_llm.config import LLMProvider
 
+from .dependency_tracker import DependencyTracker
+from .parallel_summarizer import ParallelSummarizer
 from .prompts import (
     format_class_prompt,
     format_method_prompt,
@@ -192,57 +195,140 @@ class HierarchicalSummarizer:
         self,
         changed_symbols: list[SymbolData],
         symbol_source_map: dict[str, str],
+        store: SQLiteStore | None = None,
     ) -> list[SummaryData]:
         """Generate summaries for changed symbols incrementally.
 
         Args:
             changed_symbols: List of symbols that have changed
             symbol_source_map: Map from FQN to source code
+            store: Optional SQLiteStore for dependency tracking
 
         Returns:
             List of generated summaries
         """
         summaries: list[SummaryData] = []
 
-        # Group symbols by type
-        methods = [s for s in changed_symbols if s.kind == SymbolKind.METHOD]
-        classes = [s for s in changed_symbols if s.kind in (SymbolKind.CLASS, SymbolKind.INTERFACE)]
+        # Use dependency tracking if store is provided
+        if store:
+            tracker = DependencyTracker(store)
+            changed_fqns = [s.fqn for s in changed_symbols]
+            affected = tracker.get_affected_symbols(changed_fqns)
 
-        # Generate method summaries
-        for method in methods:
-            source_code = symbol_source_map.get(method.fqn, "")
-            if not source_code:
-                continue
+            # Get all affected symbols
+            affected_symbols = []
+            for fqn in affected.total_set:
+                symbol = store.get_symbol(fqn)
+                if symbol:
+                    from ariadne_core.models.types import SymbolKind
 
-            class_name = method.parent_fqn or ""
-            summary_text = self.summarize_method(method, source_code, {"class_name": class_name})
+                    kind_str = symbol.get("kind", "")
+                    try:
+                        kind = SymbolKind(kind_str)
+                    except ValueError:
+                        continue
 
-            summaries.append(
-                SummaryData(
-                    target_fqn=method.fqn,
-                    level=SummaryLevel.METHOD,
-                    summary=summary_text,
-                )
+                    symbol_data = SymbolData(
+                        fqn=symbol["fqn"],
+                        kind=kind,
+                        name=symbol["name"],
+                        file_path=symbol.get("file_path"),
+                        line_number=symbol.get("line_number"),
+                        signature=symbol.get("signature"),
+                        parent_fqn=symbol.get("parent_fqn"),
+                        modifiers=symbol.get("modifiers") or [],
+                        annotations=symbol.get("annotations") or [],
+                    )
+                    affected_symbols.append(symbol_data)
+
+            logger.info(
+                f"Incremental update: {len(changed_symbols)} changed -> "
+                f"{len(affected_symbols)} total affected"
             )
 
-        # Generate class summaries (aggregating method summaries)
-        for cls in classes:
-            # Get method summaries for this class
-            class_methods = [s for s in summaries if s.target_fqn.startswith(cls.fqn)]
-            method_summaries = [(s.target_fqn, s.summary) for s in class_methods]
+            # Use parallel summarizer for affected symbols
+            parallel = ParallelSummarizer(self.llm_client, max_workers=self.config.max_workers)
 
-            if not method_summaries:
-                continue
+            items = []
+            for symbol in affected_symbols:
+                source_code = symbol_source_map.get(symbol.fqn, "")
+                if not source_code:
+                    continue
+                items.append((symbol, source_code))
 
-            summary_text = self.summarize_class(cls, method_summaries)
+            if items:
+                summary_results = parallel.summarize_symbols_batch(items, show_progress=True)
 
-            summaries.append(
-                SummaryData(
-                    target_fqn=cls.fqn,
-                    level=SummaryLevel.CLASS,
-                    summary=summary_text,
+                for fqn, summary_text in summary_results.items():
+                    # Determine summary level
+                    symbol = next((s for s in affected_symbols if s.fqn == fqn), None)
+                    if not symbol:
+                        continue
+
+                    if symbol.kind == SymbolKind.METHOD:
+                        level = SummaryLevel.METHOD
+                    elif symbol.kind in (SymbolKind.CLASS, SymbolKind.INTERFACE):
+                        level = SummaryLevel.CLASS
+                    else:
+                        level = SummaryLevel.METHOD
+
+                    summaries.append(
+                        SummaryData(
+                            target_fqn=fqn,
+                            level=level,
+                            summary=summary_text,
+                        )
+                    )
+
+        else:
+            # Original behavior without dependency tracking
+            # Group symbols by type
+            methods = [s for s in changed_symbols if s.kind == SymbolKind.METHOD]
+            classes = [
+                s
+                for s in changed_symbols
+                if s.kind in (SymbolKind.CLASS, SymbolKind.INTERFACE)
+            ]
+
+            # Generate method summaries
+            for method in methods:
+                source_code = symbol_source_map.get(method.fqn, "")
+                if not source_code:
+                    continue
+
+                class_name = method.parent_fqn or ""
+                summary_text = self.summarize_method(
+                    method, source_code, {"class_name": class_name}
                 )
-            )
+
+                summaries.append(
+                    SummaryData(
+                        target_fqn=method.fqn,
+                        level=SummaryLevel.METHOD,
+                        summary=summary_text,
+                    )
+                )
+
+            # Generate class summaries (aggregating method summaries)
+            for cls in classes:
+                # Get method summaries for this class
+                class_methods = [
+                    s for s in summaries if s.target_fqn.startswith(cls.fqn)
+                ]
+                method_summaries = [(s.target_fqn, s.summary) for s in class_methods]
+
+                if not method_summaries:
+                    continue
+
+                summary_text = self.summarize_class(cls, method_summaries)
+
+                summaries.append(
+                    SummaryData(
+                        target_fqn=cls.fqn,
+                        level=SummaryLevel.CLASS,
+                        summary=summary_text,
+                    )
+                )
 
         return summaries
 

@@ -12,11 +12,10 @@ Supports:
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from openai import OpenAI, Stream
-from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai import OpenAI
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -117,7 +116,7 @@ class LLMClient:
             config: LLMConfig with provider settings
         """
         self.config = config
-        self._executor = ThreadPoolExecutor(max_workers=5)
+        self._executor = ThreadPoolExecutor(max_workers=config.max_workers)
 
         # Create OpenAI client with appropriate settings per provider
         if config.provider == LLMProvider.OLLAMA:
@@ -282,13 +281,13 @@ class LLMClient:
     def batch_generate_summaries(
         self,
         items: list[dict[str, Any]],
-        concurrent_limit: int = 5,
+        concurrent_limit: int | None = None,
     ) -> list[str]:
         """Generate summaries for multiple items concurrently.
 
         Args:
             items: List of dicts with 'code' and optional 'context' keys
-            concurrent_limit: Maximum concurrent LLM calls
+            concurrent_limit: Maximum concurrent LLM calls (defaults to config.max_workers)
 
         Returns:
             List of generated summaries
@@ -296,9 +295,11 @@ class LLMClient:
         if not items:
             return []
 
-        results = {}
+        # Use config max_workers if concurrent_limit not specified
+        if concurrent_limit is None:
+            concurrent_limit = self.config.max_workers
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        results = {}
 
         with ThreadPoolExecutor(max_workers=concurrent_limit) as executor:
             # Submit all tasks
@@ -315,7 +316,7 @@ class LLMClient:
             for future in as_completed(futures):
                 index = futures[future]
                 try:
-                    results[index] = future.result()
+                    results[index] = future.result(timeout=self.config.request_timeout)
                 except Exception as e:
                     logger.error(f"Failed to generate summary for item {index}: {e}")
                     results[index] = "N/A"

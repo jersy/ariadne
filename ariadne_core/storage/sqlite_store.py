@@ -177,6 +177,69 @@ class SQLiteStore:
         cursor.execute("SELECT COUNT(*) FROM edges")
         return cursor.fetchone()[0]
 
+    def get_related_symbols(
+        self,
+        fqn: str,
+        relation: str | None = None,
+        direction: str = "both",
+    ) -> list[dict[str, Any]]:
+        """Get related symbols by edge relation.
+
+        Args:
+            fqn: The symbol FQN to find relations for
+            relation: Optional edge relation filter (e.g., 'calls', 'inherits')
+            direction: Direction of relations ('incoming', 'outgoing', or 'both')
+
+        Returns:
+            List of related symbol dicts
+
+        Raises:
+            ValueError: If direction is not one of 'incoming', 'outgoing', 'both'
+        """
+        if direction not in ("incoming", "outgoing", "both"):
+            raise ValueError(f"Invalid direction: {direction}")
+
+        cursor = self.conn.cursor()
+        results = []
+
+        if direction in ("outgoing", "both"):
+            # Get symbols this FQN points to
+            if relation:
+                cursor.execute(
+                    "SELECT s.* FROM symbols s "
+                    "JOIN edges e ON s.fqn = e.to_fqn "
+                    "WHERE e.from_fqn = ? AND e.relation = ?",
+                    (fqn, relation),
+                )
+            else:
+                cursor.execute(
+                    "SELECT s.* FROM symbols s "
+                    "JOIN edges e ON s.fqn = e.to_fqn "
+                    "WHERE e.from_fqn = ?",
+                    (fqn,),
+                )
+            results.extend([dict(row) for row in cursor.fetchall()])
+
+        if direction in ("incoming", "both"):
+            # Get symbols that point to this FQN
+            if relation:
+                cursor.execute(
+                    "SELECT s.* FROM symbols s "
+                    "JOIN edges e ON s.fqn = e.from_fqn "
+                    "WHERE e.to_fqn = ? AND e.relation = ?",
+                    (fqn, relation),
+                )
+            else:
+                cursor.execute(
+                    "SELECT s.* FROM symbols s "
+                    "JOIN edges e ON s.fqn = e.from_fqn "
+                    "WHERE e.to_fqn = ?",
+                    (fqn,),
+                )
+            results.extend([dict(row) for row in cursor.fetchall()])
+
+        return results
+
     # ========================
     # Graph traversal
     # ========================
@@ -484,6 +547,26 @@ class SQLiteStore:
             (target_fqn,),
         )
         self.conn.commit()
+
+    def mark_summaries_stale(self, target_fqns: list[str]) -> int:
+        """Mark multiple summaries as stale in batch.
+
+        Args:
+            target_fqns: List of target symbol FQNs to mark stale
+
+        Returns:
+            Number of summaries marked stale
+        """
+        if not target_fqns:
+            return 0
+
+        cursor = self.conn.cursor()
+        cursor.executemany(
+            "UPDATE summaries SET is_stale = 1 WHERE target_fqn = ?",
+            [(fqn,) for fqn in target_fqns],
+        )
+        self.conn.commit()
+        return cursor.rowcount
 
     def get_stale_summaries(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Get summaries marked as stale.
