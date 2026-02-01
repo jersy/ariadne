@@ -1,8 +1,10 @@
 """Glossary API endpoints for domain vocabulary access."""
 
+import json
 import logging
+import re
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -15,6 +17,58 @@ from ariadne_api.schemas.glossary import (
 
 router = APIRouter(prefix="/glossary")
 logger = logging.getLogger(__name__)
+
+
+def escape_like_pattern(pattern: str) -> str:
+    """Escape SQL LIKE special characters in search pattern.
+
+    Args:
+        pattern: User-provided search string
+
+    Returns:
+        Escaped string safe for use in LIKE clause
+
+    Example:
+        >>> escape_like_pattern("test%")
+        'test\\%'
+        >>> escape_like_pattern("user_data")
+        'user\\_data'
+    """
+    # Escape backslashes first, then wildcard characters (% and _)
+    return re.sub(r'([\\%_])', r'\\\1', pattern)
+
+
+def parse_synonyms(synonyms_json: Any) -> list[str]:
+    """Parse synonyms from JSON storage.
+
+    Handles both string JSON and pre-parsed lists.
+    Returns empty list on any error or if input is None.
+
+    Args:
+        synonyms_json: Either a JSON string or a list
+
+    Returns:
+        List of synonym strings, empty list on error
+    """
+    # Handle None/empty input
+    if not synonyms_json:
+        return []
+
+    # If already a list, validate and return
+    if isinstance(synonyms_json, list):
+        return synonyms_json if all(isinstance(s, str) for s in synonyms_json) else []
+
+    # If string, try to parse JSON
+    if isinstance(synonyms_json, str):
+        try:
+            parsed = json.loads(synonyms_json)
+            if isinstance(parsed, list):
+                return parsed if all(isinstance(s, str) for s in parsed) else []
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    # Fallback for any other type
+    return []
 
 
 @router.get("", response_model=GlossaryTermList, tags=["glossary"])
@@ -38,15 +92,7 @@ async def list_glossary_terms(
         # Convert domain models to response models
         terms = []
         for term_data in terms_data:
-            # Parse synonyms from JSON if present
-            synonyms_json = term_data.get("synonyms")
-            synonyms = []
-            if synonyms_json:
-                try:
-                    import json
-                    synonyms = json.loads(synonyms_json) if isinstance(synonyms_json, str) else synonyms_json
-                except Exception:
-                    synonyms = []
+            synonyms = parse_synonyms(term_data.get("synonyms"))
 
             terms.append(
                 GlossaryTerm(
@@ -84,14 +130,7 @@ async def get_glossary_term(code_term: str) -> GlossaryTerm:
             )
 
         # Parse synonyms from JSON if present
-        synonyms_json = term_data.get("synonyms")
-        synonyms = []
-        if synonyms_json:
-            try:
-                import json
-                synonyms = json.loads(synonyms_json) if isinstance(synonyms_json, str) else synonyms_json
-            except Exception:
-                synonyms = []
+        synonyms = parse_synonyms(term_data.get("synonyms"))
 
         return GlossaryTerm(
             code_term=term_data["code_term"],
@@ -121,7 +160,9 @@ async def search_glossary(
         terms_data = store.get_glossary_terms(prefix=query, limit=num_results)
 
         # Also search by business_meaning contains
+        # Escape LIKE wildcards to prevent injection
         cursor = store.conn.cursor()
+        safe_query = escape_like_pattern(query)
         cursor.execute(
             """
             SELECT * FROM glossary
@@ -129,7 +170,7 @@ async def search_glossary(
             ORDER BY code_term
             LIMIT ?
             """,
-            (f"%{query}%", num_results)
+            (f"%{safe_query}%", num_results)
         )
         meaning_matches = [dict(row) for row in cursor.fetchall()]
 
@@ -143,14 +184,7 @@ async def search_glossary(
                 seen_terms.add(code_term)
 
                 # Parse synonyms
-                synonyms_json = term_data.get("synonyms")
-                synonyms = []
-                if synonyms_json:
-                    try:
-                        import json
-                        synonyms = json.loads(synonyms_json) if isinstance(synonyms_json, str) else synonyms_json
-                    except Exception:
-                        synonyms = []
+                synonyms = parse_synonyms(term_data.get("synonyms"))
 
                 results.append(
                     GlossaryTerm(
@@ -170,14 +204,7 @@ async def search_glossary(
                 seen_terms.add(code_term)
 
                 # Parse synonyms
-                synonyms_json = term_data.get("synonyms")
-                synonyms = []
-                if synonyms_json:
-                    try:
-                        import json
-                        synonyms = json.loads(synonyms_json) if isinstance(synonyms_json, str) else synonyms_json
-                    except Exception:
-                        synonyms = []
+                synonyms = parse_synonyms(term_data.get("synonyms"))
 
                 results.append(
                     GlossaryTerm(
