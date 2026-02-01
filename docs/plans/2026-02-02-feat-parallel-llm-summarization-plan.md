@@ -266,30 +266,30 @@ class IncrementalSummarizerCoordinator:
 
 **任务清单：**
 
-- [ ] **1.1 创建 ParallelSummarizer 类**
+- [x] **1.1 创建 ParallelSummarizer 类**
   - 新文件：`ariadne_analyzer/l1_business/parallel_summarizer.py`
   - 实现 `summarize_symbols_batch()` 方法
   - 使用 ThreadPoolExecutor 替代 async/await
   - 添加进度条支持（tqdm）
 
-- [ ] **1.2 扩展 LLMClient 配置**
+- [x] **1.2 扩展 LLMClient 配置**
   - 文件：`ariadne_llm/config.py`
   - 添加 `max_workers: int = 10` 配置项
   - 添加 `request_timeout: float = 30.0` 配置项
   - 添加批量操作相关配置
 
-- [ ] **1.3 增强 LLMClient**
+- [x] **1.3 增强 LLMClient**
   - 文件：`ariadne_llm/client.py`
   - 增加 `batch_generate_summaries()` 的 `max_workers` 参数
   - 现有：5 workers → 新：可配置（默认 10）
   - 添加超时处理
 
-- [ ] **1.4 错误处理与重试**
+- [x] **1.4 错误处理与重试**
   - 单个符号失败不阻塞其他处理
   - 使用 `as_completed()` 处理部分失败
   - 添加 fallback 摘要（基于签名）
 
-- [ ] **1.5 测试并行摘要器**
+- [x] **1.5 测试并行摘要器**
   - 新文件：`tests/unit/test_parallel_summarizer.py`
   - 测试并发处理（mock LLM 调用）
   - 测试错误隔离
@@ -315,23 +315,23 @@ assert duration < 60  # < 1 分钟（假设每次 500ms，10 并发）
 
 **任务清单：**
 
-- [ ] **2.1 扩展数据库查询**
+- [x] **2.1 扩展数据库查询**
   - 文件：`ariadne_core/storage/sqlite_store.py`
   - 添加 `get_related_symbols(fqn, relation, direction)` 方法
   - 添加 `mark_summaries_stale(fqns)` 批量方法
   - 利用现有 `edges` 表的索引
 
-- [ ] **2.2 创建 DependencyTracker**
+- [x] **2.2 创建 DependencyTracker**
   - 新文件：`ariadne_analyzer/l1_business/dependency_tracker.py`
   - 实现 `get_affected_symbols(changed_fqns)` 方法
   - 支持 CALLS 和 CONTAINS 关系
 
-- [ ] **2.3 集成到 Summarizer**
+- [x] **2.3 集成到 Summarizer**
   - 文件：`ariadne_analyzer/l1_business/summarizer.py`
   - 修改 `generate_incremental_summaries()` 使用依赖跟踪
   - 只处理受影响的符号
 
-- [ ] **2.4 测试依赖跟踪**
+- [x] **2.4 测试依赖跟踪**
   - 测试 1-hop 依赖识别
   - 测试过期标记
   - 测试边界情况（无依赖、循环依赖）
@@ -355,21 +355,21 @@ assert store.is_summary_stale("com.example.ClassA")
 
 **任务清单：**
 
-- [ ] **3.1 创建协调器**
+- [x] **3.1 创建协调器**
   - 新文件：`ariadne_analyzer/l1_business/incremental_coordinator.py`
   - 实现 `regenerate_incremental()` 方法
   - 整合 ParallelSummarizer 和 DependencyTracker
 
-- [ ] **3.2 成本跟踪**
+- [x] **3.2 成本跟踪**
   - 新文件：`ariadne_analyzer/l1_business/cost_tracker.py`
   - 跟踪 token 使用和 API 成本
   - 生成成本报告
 
-- [ ] **3.3 缓存优化**
+- [x] **3.3 缓存优化**
   - 利用现有 `summaries.is_stale` 标志
   - 跳过未过期的缓存摘要
 
-- [ ] **3.4 集成测试**
+- [x] **3.4 集成测试**
   - 测试完整增量更新流程
   - 性能基准测试
 
