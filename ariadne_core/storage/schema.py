@@ -40,6 +40,25 @@ CREATE INDEX IF NOT EXISTS idx_edges_relation ON edges(relation);
 CREATE INDEX IF NOT EXISTS idx_edges_from_relation ON edges(from_fqn, relation);
 CREATE INDEX IF NOT EXISTS idx_edges_to_relation ON edges(to_fqn, relation);
 
+-- Cascade delete triggers for edges table
+-- Delete outgoing edges when a symbol is deleted
+CREATE TRIGGER IF NOT EXISTS edges_delete_outgoing_on_symbol_delete
+    AFTER DELETE ON symbols
+    FOR EACH ROW
+    WHEN EXISTS (SELECT 1 FROM edges WHERE from_fqn = OLD.fqn)
+BEGIN
+    DELETE FROM edges WHERE from_fqn = OLD.fqn;
+END;
+
+-- Delete incoming edges when a symbol is deleted
+CREATE TRIGGER IF NOT EXISTS edges_delete_incoming_on_symbol_delete
+    AFTER DELETE ON symbols
+    FOR EACH ROW
+    WHEN EXISTS (SELECT 1 FROM edges WHERE to_fqn = OLD.fqn)
+BEGIN
+    DELETE FROM edges WHERE to_fqn = OLD.fqn;
+END;
+
 -- Index metadata (for tracking indexed state)
 CREATE TABLE IF NOT EXISTS index_metadata (
     key TEXT PRIMARY KEY,
@@ -103,6 +122,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 CREATE INDEX IF NOT EXISTS idx_summaries_target_fqn ON summaries(target_fqn);
 CREATE INDEX IF NOT EXISTS idx_summaries_level ON summaries(level);
 CREATE INDEX IF NOT EXISTS idx_summaries_stale ON summaries(is_stale);
+CREATE INDEX IF NOT EXISTS idx_summaries_target_stale ON summaries(target_fqn, is_stale);
 CREATE INDEX IF NOT EXISTS idx_summaries_vector_id ON summaries(vector_id);
 
 -- Domain glossary
@@ -140,8 +160,38 @@ CREATE INDEX IF NOT EXISTS idx_constraints_type ON constraints(constraint_type);
 CREATE INDEX IF NOT EXISTS idx_constraints_vector_id ON constraints(vector_id);
 """
 
+# Phase 4 (API): Job queue for async rebuild operations
+SCHEMA_JOBS = """
+-- Rebuild jobs for async processing
+CREATE TABLE IF NOT EXISTS impact_jobs (
+    id INTEGER PRIMARY KEY,
+    job_id TEXT NOT NULL UNIQUE,
+    mode TEXT NOT NULL CHECK(mode IN ('full', 'incremental')),
+    status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'complete', 'failed')),
+    progress INTEGER DEFAULT 0,
+    total_files INTEGER DEFAULT 0,
+    processed_files INTEGER DEFAULT 0,
+    target_paths TEXT,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_impact_jobs_job_id ON impact_jobs(job_id);
+CREATE INDEX IF NOT EXISTS idx_impact_jobs_status ON impact_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_impact_jobs_created ON impact_jobs(created_at);
+
+-- Job metadata for queue management
+CREATE TABLE IF NOT EXISTS job_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
 ALL_SCHEMAS = {
     "l3": SCHEMA_L3,
     "l2": SCHEMA_L2,
     "l1": SCHEMA_L1,
+    "jobs": SCHEMA_JOBS,
 }

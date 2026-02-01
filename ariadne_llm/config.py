@@ -52,6 +52,8 @@ class LLMConfig:
         max_tokens: Maximum tokens for LLM response
         temperature: Temperature for LLM sampling
         timeout: Request timeout in seconds
+        max_workers: Maximum concurrent LLM requests (for batch operations)
+        request_timeout: Per-request timeout in seconds (for batch operations)
     """
 
     provider: LLMProvider = LLMProvider.OPENAI
@@ -62,6 +64,8 @@ class LLMConfig:
     max_tokens: int = DEFAULT_MAX_TOKENS
     temperature: float = DEFAULT_TEMPERATURE
     timeout: int = 120
+    max_workers: int = 10
+    request_timeout: float = 30.0
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
