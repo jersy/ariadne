@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS summaries (
 CREATE INDEX IF NOT EXISTS idx_summaries_target_fqn ON summaries(target_fqn);
 CREATE INDEX IF NOT EXISTS idx_summaries_level ON summaries(level);
 CREATE INDEX IF NOT EXISTS idx_summaries_stale ON summaries(is_stale);
+CREATE INDEX IF NOT EXISTS idx_summaries_target_stale ON summaries(target_fqn, is_stale);
 CREATE INDEX IF NOT EXISTS idx_summaries_vector_id ON summaries(vector_id);
 
 -- Domain glossary
