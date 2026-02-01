@@ -104,11 +104,28 @@ class IncrementalSummarizerCoordinator:
         # 2. Load symbol data for affected symbols
         symbols_data: list[tuple[SymbolData, str]] = []
 
-        for fqn in affected.total_set:
-            symbol_dict = self.store.get_symbol(fqn)
-            if not symbol_dict:
-                logger.warning(f"Symbol not found in store: {fqn}")
-                continue
+        # Batch fetch: Get all symbols in one query
+        if not affected.total_set:
+            return IncrementalResult(
+                regenerated_count=0,
+                duration_seconds=time.time() - start_time,
+                cost_report=self.cost_tracker.get_report(),
+                stats={
+                    "changed": len(changed_fqns),
+                    "dependents": len(affected.dependents),
+                    "total_affected": 0,
+                },
+            )
+
+        placeholders = ",".join("?" * len(affected.total_set))
+        cursor = self.store.conn.cursor()
+        symbol_dicts = cursor.execute(
+            f"SELECT * FROM symbols WHERE fqn IN ({placeholders})",
+            list(affected.total_set)
+        ).fetchall()
+
+        for symbol_dict in [dict(row) for row in symbol_dicts]:
+            fqn = symbol_dict["fqn"]
 
             # Get source code
             source_code = ""
@@ -154,17 +171,25 @@ class IncrementalSummarizerCoordinator:
                 cost_report=self.cost_tracker.get_report(),
             )
 
-        # Check for existing non-stale summaries
+        # Check for existing non-stale summaries - batch fetch
         filtered_symbols: list[tuple[SymbolData, str]] = []
         skipped_count = 0
 
-        for symbol, source_code in symbols_data:
-            existing = self.store.get_summary(symbol.fqn)
-            if existing and not existing.get("is_stale"):
-                # Skip if we have a fresh cached summary
-                skipped_count += 1
-                continue
-            filtered_symbols.append((symbol, source_code))
+        if symbols_data:
+            fqns = [s.fqn for s, _ in symbols_data]
+            placeholders = ",".join("?" * len(fqns))
+            summaries = cursor.execute(
+                f"SELECT target_fqn, is_stale FROM summaries WHERE target_fqn IN ({placeholders})",
+                fqns
+            ).fetchall()
+            fresh_summaries = {row[0]: row[1] for row in summaries if not row[1]}
+
+            for symbol, source_code in symbols_data:
+                if symbol.fqn in fresh_summaries:
+                    # Skip if we have a fresh cached summary
+                    skipped_count += 1
+                    continue
+                filtered_symbols.append((symbol, source_code))
 
         # 4. Parallel summarization
         summaries = self.parallel.summarize_symbols_batch(
@@ -174,6 +199,12 @@ class IncrementalSummarizerCoordinator:
         # 5. Batch update database
         for fqn, summary_text in summaries.items():
             from ariadne_core.models.types import SummaryData, SummaryLevel
+
+            # Re-check if still needs update (concurrent modification detection)
+            existing = self.store.get_summary(fqn)
+            if existing and not existing.get("is_stale"):
+                logger.info(f"Skipping {fqn} - no longer stale (concurrent update)")
+                continue
 
             # Determine level
             symbol = next((s for s, _ in filtered_symbols if s.fqn == fqn), None)

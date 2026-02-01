@@ -7,6 +7,7 @@ Tracks token usage and API costs for LLM operations.
 
 import logging
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class LLMCostTracker:
         "cached_count": 0,
         "model_costs": {},
     })
+    _lock: Lock = field(default_factory=Lock)
 
     def record_request(
         self,
@@ -66,20 +68,21 @@ class LLMCostTracker:
         cost_per_1k = self.MODEL_COSTS.get(model, 0.001)
         cost = total_tokens / 1000 * cost_per_1k
 
-        # Update totals
-        self.usage["total_tokens"] += total_tokens
-        self.usage["total_cost_usd"] += cost
-        self.usage["requests_count"] += 1
-        if cached:
-            self.usage["cached_count"] += 1
+        # Thread-safe update of totals
+        with self._lock:
+            self.usage["total_tokens"] += total_tokens
+            self.usage["total_cost_usd"] += cost
+            self.usage["requests_count"] += 1
+            if cached:
+                self.usage["cached_count"] += 1
 
-        # Track per-model costs
-        if model not in self.usage["model_costs"]:
-            self.usage["model_costs"][model] = {"tokens": 0, "cost": 0.0, "requests": 0}
+            # Track per-model costs
+            if model not in self.usage["model_costs"]:
+                self.usage["model_costs"][model] = {"tokens": 0, "cost": 0.0, "requests": 0}
 
-        self.usage["model_costs"][model]["tokens"] += total_tokens
-        self.usage["model_costs"][model]["cost"] += cost
-        self.usage["model_costs"][model]["requests"] += 1
+            self.usage["model_costs"][model]["tokens"] += total_tokens
+            self.usage["model_costs"][model]["cost"] += cost
+            self.usage["model_costs"][model]["requests"] += 1
 
     def get_report(self) -> str:
         """Generate a cost report string.
@@ -111,7 +114,8 @@ class LLMCostTracker:
         Returns:
             Dict with usage statistics
         """
-        return self.usage.copy()
+        with self._lock:
+            return self.usage.copy()
 
     def reset(self) -> None:
         """Reset all tracking."""

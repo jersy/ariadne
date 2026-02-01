@@ -2,23 +2,22 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
-from pathlib import Path
+from threading import local
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 from ariadne_core.models.types import (
     AntiPatternData,
+    ConstraintEntry,
     EdgeData,
     EntryPointData,
     ExternalDependencyData,
-    SymbolData,
-    ConstraintEntry,
     GlossaryEntry,
     SummaryData,
+    SymbolData,
 )
 from ariadne_core.storage.schema import ALL_SCHEMAS
 
@@ -31,15 +30,30 @@ class SQLiteStore:
 
     def __init__(self, db_path: str = "ariadne.db", init: bool = False):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._local = local()
 
         if init:
             self._rebuild_schema()
         else:
             self._ensure_schema()
+
+    @property
+    def conn(self):
+        """Get thread-local SQLite connection.
+
+        Creates a new connection for each thread on first access.
+        Connections are reused within the same thread.
+        """
+        if not hasattr(self._local, 'conn'):
+            self._local.conn = sqlite3.connect(
+                self.db_path,
+                check_same_thread=False  # Allow access from any thread
+            )
+            self._local.conn.row_factory = sqlite3.Row
+            self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA foreign_keys=ON")
+            self._local.conn.execute("PRAGMA busy_timeout=30000")  # 30s timeout
+        return self._local.conn
 
     def _rebuild_schema(self) -> None:
         """Drop and recreate all tables."""
@@ -551,6 +565,8 @@ class SQLiteStore:
     def mark_summaries_stale(self, target_fqns: list[str]) -> int:
         """Mark multiple summaries as stale in batch.
 
+        Uses a single UPDATE with IN clause for efficiency and correctness.
+
         Args:
             target_fqns: List of target symbol FQNs to mark stale
 
@@ -561,9 +577,11 @@ class SQLiteStore:
             return 0
 
         cursor = self.conn.cursor()
-        cursor.executemany(
-            "UPDATE summaries SET is_stale = 1 WHERE target_fqn = ?",
-            [(fqn,) for fqn in target_fqns],
+        placeholders = ",".join("?" * len(target_fqns))
+        cursor.execute(
+            f"UPDATE summaries SET is_stale = 1, updated_at = CURRENT_TIMESTAMP "
+            f"WHERE target_fqn IN ({placeholders})",
+            target_fqns,
         )
         self.conn.commit()
         return cursor.rowcount
@@ -815,7 +833,7 @@ class SQLiteStore:
         self,
         summary: SummaryData,
         embedding: list[float] | None = None,
-        vector_store: "ChromaVectorStore | None" = None,
+        vector_store: ChromaVectorStore | None = None,
     ) -> str | None:
         """Create summary with optional vector storage in single transaction.
 
@@ -852,35 +870,32 @@ class SQLiteStore:
                 vector_id = None
 
                 # 2. Add to ChromaDB if embedding provided
+                # This must succeed or entire transaction rolls back
                 if embedding is not None and vector_store is not None:
-                    try:
-                        vector_store.add_summary(
-                            summary_id=str(summary_id),
-                            text=summary.summary,
-                            embedding=embedding,
-                            metadata={"fqn": summary.target_fqn, "level": summary.level.value},
-                        )
-                        # 3. Update vector_id only after ChromaDB success
-                        cursor.execute(
-                            "UPDATE summaries SET vector_id = ? WHERE id = ?",
-                            (str(summary_id), summary_id),
-                        )
-                        vector_id = str(summary_id)
-                    except Exception as e:
-                        logger.error(f"ChromaDB operation failed, SQLite record created: {e}")
-                        # ChromaDB failed but SQLite record was created - this is acceptable
-                        # The summary exists but has no vector for search
+                    vector_store.add_summary(
+                        summary_id=str(summary_id),
+                        text=summary.summary,
+                        embedding=embedding,
+                        metadata={"fqn": summary.target_fqn, "level": summary.level.value},
+                    )
+                    # 3. Update vector_id only after ChromaDB success
+                    cursor.execute(
+                        "UPDATE summaries SET vector_id = ? WHERE id = ?",
+                        (str(summary_id), summary_id),
+                    )
+                    vector_id = str(summary_id)
 
                 return vector_id
 
         except Exception as e:
             logger.error(f"Failed to create summary with vector: {e}")
+            # If ChromaDB failed, the entire transaction (including SQLite insert) is rolled back
             raise
 
     def delete_summary_cascade(
         self,
         target_fqn: str,
-        vector_store: "ChromaVectorStore | None" = None,
+        vector_store: ChromaVectorStore | None = None,
     ) -> bool:
         """Delete summary from both SQLite and ChromaDB atomically.
 

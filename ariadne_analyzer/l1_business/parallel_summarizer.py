@@ -8,6 +8,7 @@ Processes multiple symbols concurrently with progress tracking and error isolati
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from typing import Any
 
 from ariadne_core.models.types import SymbolData
@@ -41,6 +42,7 @@ class ParallelSummarizer:
             "failed": 0,
             "skipped": 0,
         }
+        self._stats_lock = Lock()
 
     def summarize_symbols_batch(
         self,
@@ -98,7 +100,7 @@ class ParallelSummarizer:
                                 # Generate fallback summary
                                 fallback = self._fallback_summary(fqn, futures[future][2])
                                 results[fqn] = fallback
-                                self.stats["failed"] += 1
+                                self._increment_failed()
                             finally:
                                 pbar.update(1)
                 except ImportError:
@@ -115,15 +117,27 @@ class ParallelSummarizer:
                         logger.error(f"Failed to summarize {fqn}: {e}")
                         fallback = self._fallback_summary(fqn, context)
                         results[fqn] = fallback
-                        self.stats["failed"] += 1
+                        self._increment_failed()
 
-        self.stats["success"] = self.stats["total"] - self.stats["failed"]
+        # Calculate success count (safe to do outside the thread pool)
+        with self._stats_lock:
+            self.stats["success"] = self.stats["total"] - self.stats["failed"]
         logger.info(
             f"Summarization complete: {self.stats['success']} succeeded, "
             f"{self.stats['failed']} failed"
         )
 
         return results
+
+    def _increment_failed(self) -> None:
+        """Thread-safe increment of failed counter."""
+        with self._stats_lock:
+            self.stats["failed"] += 1
+
+    def _set_success_count(self, count: int) -> None:
+        """Thread-safe set of success counter."""
+        with self._stats_lock:
+            self.stats["success"] = count
 
     def _summarize_single(self, fqn: str, source_code: str, context: dict[str, Any]) -> str:
         """Summarize a single symbol (runs in worker thread).
@@ -171,7 +185,8 @@ class ParallelSummarizer:
         Returns:
             Dict with total, success, failed, skipped counts
         """
-        return self.stats.copy()
+        with self._stats_lock:
+            return self.stats.copy()
 
     def reset_stats(self) -> None:
         """Reset statistics counters."""

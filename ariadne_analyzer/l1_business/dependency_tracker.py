@@ -56,35 +56,47 @@ class DependencyTracker:
     def get_affected_symbols(self, changed_fqns: list[str]) -> AffectedSymbols:
         """Get all symbols affected by the given changes.
 
+        Uses batch fetching to avoid N+1 query problems.
+
         Args:
             changed_fqns: List of changed symbol FQNs
 
         Returns:
             AffectedSymbols containing changed and dependent symbols
         """
+        if not changed_fqns:
+            return AffectedSymbols(changed=[])
+
         affected = set(changed_fqns)
         dependents: set[str] = set()
 
-        for fqn in changed_fqns:
-            # 1. Get direct callers (incoming CALLS edges)
-            callers = self.store.get_related_symbols(
-                fqn, relation="calls", direction="incoming"
-            )
-            dependents.update(c["fqn"] for c in callers)
+        # Batch fetch: Get all callers for changed symbols in 2 queries
+        placeholders = ",".join("?" * len(changed_fqns))
 
-            # 2. Get containing parent (via parent_fqn or MEMBER_OF)
-            symbol = self.store.get_symbol(fqn)
-            if symbol and symbol.get("parent_fqn"):
-                parent_fqn = symbol["parent_fqn"]
+        # Query 1: Batch fetch all incoming CALLS edges
+        cursor = self.store.conn.cursor()
+        callers = cursor.execute(
+            f"""SELECT DISTINCT e.from_fqn FROM edges e
+                WHERE e.to_fqn IN ({placeholders}) AND e.relation = 'calls'""",
+            changed_fqns
+        ).fetchall()
+        dependents.update(c[0] for c in callers)
+
+        # Query 2: Batch fetch all symbols and their parents
+        symbols = cursor.execute(
+            f"SELECT fqn, parent_fqn FROM symbols WHERE fqn IN ({placeholders})",
+            changed_fqns
+        ).fetchall()
+
+        for _fqn, parent_fqn in symbols:
+            if parent_fqn:
                 affected.add(parent_fqn)
                 dependents.add(parent_fqn)
 
-            # 3. Mark the changed symbol's summary as stale
-            self.store.mark_summary_stale(fqn)
-
-        # Also mark all dependent summaries as stale
-        if dependents:
-            self.store.mark_summaries_stale(list(dependents))
+        # ATOMIC: Mark all affected symbols (changed + dependents) as stale in one transaction
+        all_to_mark = list(affected | dependents)
+        if all_to_mark:
+            self.store.mark_summaries_stale(all_to_mark)
 
         logger.info(
             f"Dependency analysis: {len(changed_fqns)} changed -> "
