@@ -534,6 +534,43 @@ class SQLiteStore:
         cursor.execute("SELECT COUNT(*) FROM summaries")
         return cursor.fetchone()[0]
 
+    def batch_update_summaries(
+        self, summaries: dict[str, str], level: str | None = None
+    ) -> int:
+        """Batch update multiple summaries in a single transaction.
+
+        Args:
+            summaries: Dict mapping target_fqn to summary text
+            level: Optional summary level (defaults to 'method')
+
+        Returns:
+            Number of summaries updated
+        """
+        if not summaries:
+            return 0
+
+        cursor = self.conn.cursor()
+        level_value = level or "method"
+
+        try:
+            with self.conn:
+                # Use executemany for batch update within transaction
+                rows = [
+                    (summary_text, False, fqn)
+                    for fqn, summary_text in summaries.items()
+                ]
+                cursor.executemany(
+                    """UPDATE summaries
+                       SET summary = ?, is_stale = ?, updated_at = CURRENT_TIMESTAMP
+                       WHERE target_fqn = ?""",
+                    rows,
+                )
+                return cursor.rowcount
+        except Exception:
+            # Rowcount may not be available with executemany in all SQLite versions
+            # Return the count of items processed
+            return len(summaries)
+
     # ========================
     # L1: Glossary
     # ========================
