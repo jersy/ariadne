@@ -35,13 +35,16 @@ class JobQueue:
     """Queue for managing async rebuild jobs.
 
     Features:
-    - Thread-safe job creation and status updates
+    - Thread-safe job creation and status updates via atomic SQL operations
     - Single active job at a time (concurrent jobs are queued)
     - Progress tracking
     - Job status polling
-    """
 
-    _lock = threading.Lock()
+    Thread Safety:
+    - Uses atomic SQL operations with RETURNING for thread-safe job acquisition
+    - SQLite handles concurrent access with internal locking
+    - Each method creates its own cursor for isolation
+    """
 
     def __init__(self, store: SQLiteStore) -> None:
         """Initialize job queue.
@@ -106,6 +109,17 @@ class JobQueue:
         if not row:
             return None
 
+        return self._row_to_job(row)
+
+    def _row_to_job(self, row: Any) -> Job:
+        """Convert a database row to a Job object.
+
+        Args:
+            row: Database row (dict-like from sqlite3.Row)
+
+        Returns:
+            Job object
+        """
         job_data = dict(row)
         return Job(
             job_id=job_data["job_id"],
@@ -259,48 +273,50 @@ class JobQueue:
                 (limit,),
             )
 
-        jobs = []
-        for row in cursor.fetchall():
-            job_data = dict(row)
-            jobs.append(
-                Job(
-                    job_id=job_data["job_id"],
-                    mode=job_data["mode"],
-                    status=job_data["status"],
-                    progress=job_data["progress"],
-                    total_files=job_data["total_files"],
-                    processed_files=job_data["processed_files"],
-                    target_paths=job_data["target_paths"].split(",") if job_data.get("target_paths") else None,
-                    started_at=job_data.get("started_at"),
-                    completed_at=job_data.get("completed_at"),
-                    error_message=job_data.get("error_message"),
-                    created_at=job_data["created_at"],
-                )
-            )
-
-        return jobs
+        return [self._row_to_job(row) for row in cursor.fetchall()]
 
     @contextmanager
     def acquire_job(self, job_id: str) -> Any:
-        """Context manager to acquire and run a job.
+        """Context manager to atomically acquire and run a job.
 
-        Automatically handles status updates and error handling.
+        Uses atomic UPDATE...RETURNING to prevent race conditions:
+        - Single SQL operation checks status AND updates to 'running'
+        - Only one thread can successfully acquire a pending job
+        - Other threads will get None from the UPDATE and fail
 
         Args:
             job_id: Job ID to acquire
 
         Yields:
             The job object
+
+        Raises:
+            ValueError: If job not found or not pending (already acquired)
         """
-        job = self._get_job(job_id)
-        if not job:
-            raise ValueError(f"Job not found: {job_id}")
+        # Atomic UPDATE with RETURNING: check status AND mark running in one operation
+        cursor = self.store.conn.cursor()
+        cursor.execute(
+            """
+            UPDATE impact_jobs
+            SET status = 'running',
+                started_at = CURRENT_TIMESTAMP
+            WHERE job_id = ? AND status = 'pending'
+            RETURNING *
+            """,
+            (job_id,),
+        )
+        row = cursor.fetchone()
+        self.store.conn.commit()
 
-        if job.status != "pending":
-            raise ValueError(f"Job not pending: {job_id} (status={job.status})")
+        if not row:
+            # Job either doesn't exist or was already acquired by another thread
+            existing = self._get_job(job_id)
+            if not existing:
+                raise ValueError(f"Job not found: {job_id}")
+            else:
+                raise ValueError(f"Job not available: {job_id} (status={existing.status}, already acquired)")
 
-        # Mark as running
-        self.update_job_status(job_id, status="running")
+        job = self._row_to_job(row)
 
         try:
             yield job

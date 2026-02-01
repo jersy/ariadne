@@ -1,26 +1,18 @@
 """Graph query endpoint for call graph traversal."""
 
 import logging
-import os
 import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ariadne_api.dependencies import get_store
 from ariadne_api.schemas.graph import GraphQueryRequest, GraphResponse, GraphNode, GraphEdge, GraphMetadata
-from ariadne_core.storage.sqlite_store import SQLiteStore
+from ariadne_core.utils.layer import determine_layer
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-def get_store() -> SQLiteStore:
-    """Dependency to get SQLite store."""
-    db_path = os.environ.get("ARIADNE_DB_PATH", "ariadne.db")
-    if not os.path.exists(db_path):
-        raise HTTPException(status_code=503, detail="Database not available")
-    return SQLiteStore(db_path)
 
 
 @router.post("/knowledge/graph/query", response_model=GraphResponse, tags=["graph"])
@@ -33,68 +25,70 @@ async def query_graph(request: GraphQueryRequest) -> GraphResponse:
     - Bidirectional traversal (both directions)
     - Multiple relation types (calls, inherits, implements)
     """
-    store = get_store()
-    start_time = time.time()
+    with get_store() as store:
+        start_time = time.time()
 
-    # Validate starting symbol exists
-    start_symbol = store.get_symbol(request.start)
-    if not start_symbol:
-        raise HTTPException(status_code=404, detail=f"Symbol not found: {request.start}")
+        # Validate starting symbol exists
+        start_symbol = store.get_symbol(request.start)
+        if not start_symbol:
+            raise HTTPException(status_code=404, detail=f"Symbol not found: {request.start}")
 
-    nodes: dict[str, GraphNode] = {}
-    edges: list[GraphEdge] = []
+        nodes: dict[str, GraphNode] = {}
+        edges: list[GraphEdge] = []
 
-    # Traverse based on direction
-    if request.direction in ("outgoing", "both"):
-        outgoing_nodes, outgoing_edges = _traverse_outgoing(
-            store, request.start, request.relation, request.depth, request.filters
+        # Traverse based on direction
+        if request.direction in ("outgoing", "both"):
+            outgoing_nodes, outgoing_edges = _traverse_outgoing(
+                store, request.start, request.relation, request.depth, request.filters, request.max_results
+            )
+            nodes.update(outgoing_nodes)
+            edges.extend(outgoing_edges)
+
+        if request.direction in ("incoming", "both"):
+            incoming_nodes, incoming_edges = _traverse_incoming(
+                store, request.start, request.relation, request.depth, request.filters, request.max_results
+            )
+            nodes.update(incoming_nodes)
+            edges.extend(incoming_edges)
+
+        # Add start node if not already present
+        if request.start not in nodes:
+            nodes[request.start] = _create_node(start_symbol)
+
+        # Apply max_results limit
+        node_list = list(nodes.values())
+        truncated = len(node_list) > request.max_results
+        if truncated:
+            node_list = node_list[: request.max_results]
+
+        query_time_ms = int((time.time() - start_time) * 1000)
+
+        return GraphResponse(
+            nodes=node_list,
+            edges=edges,
+            metadata=GraphMetadata(
+                max_depth=request.depth,
+                total_nodes=len(nodes),
+                total_edges=len(edges),
+                truncated=truncated,
+                query_time_ms=query_time_ms,
+            ),
         )
-        nodes.update(outgoing_nodes)
-        edges.extend(outgoing_edges)
-
-    if request.direction in ("incoming", "both"):
-        incoming_nodes, incoming_edges = _traverse_incoming(
-            store, request.start, request.relation, request.depth, request.filters
-        )
-        nodes.update(incoming_nodes)
-        edges.extend(incoming_edges)
-
-    # Add start node if not already present
-    if request.start not in nodes:
-        nodes[request.start] = _create_node(start_symbol)
-
-    # Apply max_results limit
-    node_list = list(nodes.values())
-    truncated = len(node_list) > request.max_results
-    if truncated:
-        node_list = node_list[: request.max_results]
-
-    query_time_ms = int((time.time() - start_time) * 1000)
-
-    return GraphResponse(
-        nodes=node_list,
-        edges=edges,
-        metadata=GraphMetadata(
-            max_depth=request.depth,
-            total_nodes=len(nodes),
-            total_edges=len(edges),
-            truncated=truncated,
-            query_time_ms=query_time_ms,
-        ),
-    )
 
 
 def _traverse_outgoing(
-    store: SQLiteStore,
+    store: "SQLiteStore",
     start_fqn: str,
     relation: str,
     max_depth: int,
     filters: dict[str, Any],
+    max_results: int = 1000,
 ) -> tuple[dict[str, GraphNode], list[GraphEdge]]:
     """Traverse graph in outgoing direction (calls made by start_fqn)."""
     cursor = store.conn.cursor()
 
     # Get forward call chain using recursive CTE
+    # LIMIT clause prevents unbounded result sets on large/circular graphs
     if relation == "calls":
         cursor.execute(
             """
@@ -110,9 +104,9 @@ def _traverse_outgoing(
                 JOIN call_chain cc ON e.from_fqn = cc.to_fqn
                 WHERE cc.depth < ? AND e.relation = 'calls'
             )
-            SELECT DISTINCT * FROM call_chain ORDER BY depth
+            SELECT DISTINCT * FROM call_chain ORDER BY depth LIMIT ?
             """,
-            (start_fqn, max_depth),
+            (start_fqn, max_depth, max_results * 2),  # *2 for edges, then filtered
         )
     else:
         # Other relation types
@@ -130,9 +124,9 @@ def _traverse_outgoing(
                 JOIN chain c ON e.from_fqn = c.to_fqn
                 WHERE c.depth < ? AND e.relation = ?
             )
-            SELECT DISTINCT * FROM chain ORDER BY depth
+            SELECT DISTINCT * FROM chain ORDER BY depth LIMIT ?
             """,
-            (start_fqn, relation, max_depth, relation),
+            (start_fqn, relation, max_depth, relation, max_results * 2),
         )
 
     nodes: dict[str, GraphNode] = {}
@@ -161,16 +155,18 @@ def _traverse_outgoing(
 
 
 def _traverse_incoming(
-    store: SQLiteStore,
+    store: "SQLiteStore",
     start_fqn: str,
     relation: str,
     max_depth: int,
     filters: dict[str, Any],
+    max_results: int = 1000,
 ) -> tuple[dict[str, GraphNode], list[GraphEdge]]:
     """Traverse graph in incoming direction (callers of start_fqn)."""
     cursor = store.conn.cursor()
 
     # Get reverse callers using recursive CTE
+    # LIMIT clause prevents unbounded result sets on large/circular graphs
     if relation == "calls":
         cursor.execute(
             """
@@ -186,9 +182,9 @@ def _traverse_incoming(
                 JOIN callers c ON e.to_fqn = c.from_fqn
                 WHERE c.depth < ? AND e.relation = 'calls'
             )
-            SELECT DISTINCT * FROM callers ORDER BY depth
+            SELECT DISTINCT * FROM callers ORDER BY depth LIMIT ?
             """,
-            (start_fqn, max_depth),
+            (start_fqn, max_depth, max_results * 2),  # *2 for edges, then filtered
         )
     else:
         cursor.execute(
@@ -205,9 +201,9 @@ def _traverse_incoming(
                 JOIN callers c ON e.to_fqn = c.from_fqn
                 WHERE c.depth < ? AND e.relation = ?
             )
-            SELECT DISTINCT * FROM callers ORDER BY depth
+            SELECT DISTINCT * FROM callers ORDER BY depth LIMIT ?
             """,
-            (start_fqn, relation, max_depth, relation),
+            (start_fqn, relation, max_depth, relation, max_results * 2),
         )
 
     nodes: dict[str, GraphNode] = {}
@@ -237,20 +233,8 @@ def _traverse_incoming(
 
 def _create_node(symbol: dict[str, Any]) -> GraphNode:
     """Create a GraphNode from a symbol dict."""
-    # Determine layer from annotations
-    layer = None
-    annotations = symbol.get("annotations")
-    if annotations is None:
-        annotations = []
-    elif isinstance(annotations, str):
-        annotations = [annotations]
-
-    if "Controller" in annotations or "RestController" in annotations:
-        layer = "controller"
-    elif "Service" in annotations:
-        layer = "service"
-    elif "Repository" in annotations:
-        layer = "repository"
+    # Determine layer using shared utility
+    layer = determine_layer(symbol)
 
     return GraphNode(
         fqn=symbol["fqn"],

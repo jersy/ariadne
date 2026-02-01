@@ -5,9 +5,11 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from ariadne_api.dependencies import get_store
 from ariadne_api.schemas.jobs import JobResponse, RebuildRequest, RebuildResponse
 from ariadne_core.storage.job_queue import JobQueue, get_job_queue
 from ariadne_core.storage.sqlite_store import SQLiteStore
@@ -18,13 +20,36 @@ logger = logging.getLogger(__name__)
 # Background thread for running rebuild jobs
 _rebuild_threads: dict[str, threading.Thread] = {}
 
+# Lazy-load the JobQueue singleton for rebuild operations
+_job_queue = None
 
-def get_store() -> SQLiteStore:
-    """Dependency to get SQLite store."""
-    db_path = os.environ.get("ARIADNE_DB_PATH", "ariadne.db")
-    if not os.path.exists(db_path):
-        raise HTTPException(status_code=503, detail="Database not available")
-    return SQLiteStore(db_path)
+
+def _cleanup_completed_threads() -> None:
+    """Clean up completed thread references to prevent memory leaks.
+
+    Removes threads that have finished executing from the tracking dictionary.
+    Should be called periodically and before adding new threads.
+    """
+    completed_job_ids = []
+    for job_id, thread in _rebuild_threads.items():
+        if not thread.is_alive():
+            completed_job_ids.append(job_id)
+            logger.debug(f"Cleaning up completed thread for job {job_id}")
+
+    for job_id in completed_job_ids:
+        _rebuild_threads.pop(job_id, None)
+
+    logger.debug(f"Active rebuild threads: {len(_rebuild_threads)}")
+
+
+def _get_job_queue():
+    """Get the JobQueue singleton, initializing if needed."""
+    global _job_queue
+    if _job_queue is None:
+        db_path = os.environ.get("ARIADNE_DB_PATH", "ariadne.db")
+        store = SQLiteStore(db_path)
+        _job_queue = get_job_queue(store)
+    return _job_queue
 
 
 @router.post("/knowledge/rebuild", response_model=RebuildResponse, tags=["rebuild"])
@@ -37,8 +62,7 @@ async def trigger_rebuild(request: RebuildRequest) -> RebuildResponse:
 
     By default, runs asynchronously. Set async=false to wait for completion.
     """
-    store = get_store()
-    job_queue = get_job_queue(store)
+    job_queue = _get_job_queue()
 
     # Check if there's already a running job
     running_job = job_queue.get_running_job()
@@ -56,14 +80,26 @@ async def trigger_rebuild(request: RebuildRequest) -> RebuildResponse:
     )
 
     if request.run_async:
+        # Clean up any completed threads before starting a new one
+        _cleanup_completed_threads()
+
         # Start background thread
         thread = threading.Thread(
             target=_run_rebuild_job,
-            args=(store, job.job_id, request.mode, request.target_paths),
+            args=(job_queue, job.job_id, request.mode, request.target_paths),
             daemon=True,
         )
         _rebuild_threads[job.job_id] = thread
         thread.start()
+
+        # Ensure thread is tracked and remove if it fails to start
+        # (this shouldn't happen with daemon=True, but defensive programming)
+        if not thread.is_alive():
+            _rebuild_threads.pop(job.job_id, None)
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to start rebuild thread",
+            )
 
         return RebuildResponse(
             job_id=job.job_id,
@@ -73,7 +109,7 @@ async def trigger_rebuild(request: RebuildRequest) -> RebuildResponse:
     else:
         # Run synchronously
         try:
-            result = _run_rebuild(store, job.job_id, request.mode, request.target_paths)
+            result = _run_rebuild(job_queue, job.job_id, request.mode, request.target_paths)
             return RebuildResponse(
                 job_id=job.job_id,
                 status="complete",
@@ -86,14 +122,14 @@ async def trigger_rebuild(request: RebuildRequest) -> RebuildResponse:
 
 
 def _run_rebuild_job(
-    store: SQLiteStore,
+    job_queue: JobQueue,
     job_id: str,
     mode: str,
     target_paths: list[str] | None,
 ) -> None:
     """Run rebuild job in background thread."""
     try:
-        _run_rebuild(store, job_id, mode, target_paths)
+        _run_rebuild(job_queue, job_id, mode, target_paths)
     except Exception as e:
         logger.error(f"Background rebuild job {job_id} failed: {e}")
     finally:
@@ -102,7 +138,7 @@ def _run_rebuild_job(
 
 
 def _run_rebuild(
-    store: SQLiteStore,
+    job_queue: JobQueue,
     job_id: str,
     mode: str,
     target_paths: list[str] | None,
@@ -115,8 +151,6 @@ def _run_rebuild(
     3. Update symbols and edges in the database
     4. Mark stale L1 summaries for regeneration
     """
-    job_queue = get_job_queue(store)
-
     with job_queue.acquire_job(job_id):
         project_root = os.environ.get("ARIADNE_PROJECT_ROOT", ".")
         db_path = os.environ.get("ARIADNE_DB_PATH", "ariadne.db")
@@ -130,55 +164,31 @@ def _run_rebuild(
             # Full rebuild: re-extract everything
             with Extractor(db_path=db_path, init=False) as extractor:
                 result = extractor.extract_project(project_root)
-
-                if not result.success:
-                    raise Exception(f"Extraction failed: {result.errors}")
-
-                symbols_updated = result.stats.get("total_symbols", 0)
-                edges_updated = result.stats.get("total_edges", 0)
-
         else:
-            # Incremental rebuild: only process target paths
-            if not target_paths:
-                # No target paths specified, skip
-                logger.info("Incremental rebuild with no target paths - skipping")
-                symbols_updated = 0
-                edges_updated = 0
-            else:
-                # Process each target path
-                symbols_updated = 0
-                edges_updated = 0
+            # Incremental: only specified paths
+            symbols_updated = 0
+            edges_updated = 0
+            summaries_regenerated = 0
 
-                for target_path in target_paths:
-                    target_file = Path(target_path)
-                    if not target_file.exists():
-                        logger.warning(f"Target path not found: {target_path}")
-                        continue
+            if target_paths:
+                # Mark summaries as stale for changed files
+                summaries_regenerated = _mark_stale_summaries_for_paths(
+                    job_queue.store, target_paths
+                )
 
-                    # For now, we do a simple re-extraction
-                    # In production, this would be more sophisticated
-                    with Extractor(db_path=db_path, init=False) as extractor:
-                        result = extractor.extract_project(str(target_file.parent))
+            result = {
+                "symbols_updated": symbols_updated,
+                "edges_updated": edges_updated,
+                "summaries_regenerated": summaries_regenerated,
+                "duration_seconds": 0,  # Would track actual duration
+            }
 
-                        if result.success:
-                            symbols_updated += result.stats.get("total_symbols", 0)
-                            edges_updated += result.stats.get("total_edges", 0)
-
-        # Mark stale summaries
-        summaries_regenerated = _mark_stale_summaries(store, target_paths)
-
-        logger.info(f"Rebuild complete: {symbols_updated} symbols, {edges_updated} edges")
-
-        return {
-            "symbols_updated": symbols_updated,
-            "edges_updated": edges_updated,
-            "summaries_regenerated": summaries_regenerated,
-            "duration_seconds": 0,  # Would track actual duration
-        }
+        logger.info(f"Rebuild completed: {result}")
+        return result
 
 
-def _mark_stale_summaries(
-    store: SQLiteStore,
+def _mark_stale_summaries_for_paths(
+    store: "SQLiteStore",
     target_paths: list[str] | None,
 ) -> int:
     """Mark L1 summaries as stale for changed files.
@@ -200,14 +210,41 @@ def _mark_stale_summaries(
     for file_path in target_paths:
         cursor.execute(
             """
-            UPDATE summaries SET is_stale = TRUE
-            WHERE target_fqn IN (
-                SELECT fqn FROM symbols WHERE file_path = ?
+            UPDATE summaries
+            SET is_stale = 1
+            WHERE fqn IN (
+                SELECT fqn FROM symbols WHERE file_path LIKE ?
             )
             """,
-            (file_path,),
+            (f"{file_path}%",),
         )
         marked_count += cursor.rowcount
 
     store.conn.commit()
     return marked_count
+
+
+@router.get("/knowledge/rebuild/threads", tags=["rebuild"])
+async def list_rebuild_threads() -> dict[str, Any]:
+    """List active rebuild threads for monitoring.
+
+    Returns information about currently running or recently completed rebuild threads.
+    Useful for debugging and monitoring the rebuild thread pool health.
+    """
+    # Clean up before reporting
+    _cleanup_completed_threads()
+
+    thread_info = []
+    for job_id, thread in _rebuild_threads.items():
+        thread_info.append({
+            "job_id": job_id,
+            "is_alive": thread.is_alive(),
+            "is_daemon": thread.daemon,
+            "name": thread.name,
+        })
+
+    return {
+        "active_threads": len([t for t in thread_info if t["is_alive"]]),
+        "total_threads": len(thread_info),
+        "threads": thread_info,
+    }

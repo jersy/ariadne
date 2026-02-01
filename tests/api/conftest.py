@@ -6,6 +6,16 @@ from pathlib import Path
 
 import pytest
 
+from ariadne_core.container import reset_container
+
+
+@pytest.fixture(autouse=True)
+def reset_di_container():
+    """Reset the dependency injection container between tests."""
+    reset_container()
+    yield
+    reset_container()
+
 
 @pytest.fixture
 def temp_db_path():
@@ -23,6 +33,8 @@ def api_client(temp_db_path):
     # Set environment variables
     os.environ["ARIADNE_DB_PATH"] = temp_db_path
     os.environ["ARIADNE_LOG_LEVEL"] = "WARNING"  # Reduce noise in tests
+    os.environ["ARIADNE_RATE_LIMIT_ENABLED"] = "false"  # Disable rate limiting in tests
+    os.environ["ARIADNE_API_VERSION"] = "v1"  # Use consistent API version in tests
 
     from ariadne_api.app import app
 
@@ -32,6 +44,10 @@ def api_client(temp_db_path):
     # Cleanup
     if "ARIADNE_DB_PATH" in os.environ:
         del os.environ["ARIADNE_DB_PATH"]
+    if "ARIADNE_RATE_LIMIT_ENABLED" in os.environ:
+        del os.environ["ARIADNE_RATE_LIMIT_ENABLED"]
+    if "ARIADNE_API_VERSION" in os.environ:
+        del os.environ["ARIADNE_API_VERSION"]
 
 
 @pytest.fixture

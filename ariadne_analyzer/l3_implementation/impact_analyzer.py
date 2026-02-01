@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ariadne_core.storage.sqlite_store import SQLiteStore
+from ariadne_core.utils.layer import determine_layer_or_unknown
 
 
 @dataclass
@@ -130,7 +131,7 @@ class ImpactAnalyzer:
             # Get layer information
             symbol = self.store.get_symbol(caller["from_fqn"])
             if symbol:
-                layer = self._determine_layer(symbol)
+                layer = determine_layer_or_unknown(symbol)
                 caller["layer"] = layer
             callers.append(caller)
 
@@ -289,27 +290,3 @@ class ImpactAnalyzer:
         test_bonus = min(len(tests) * 0.1, 0.2)
 
         return min(base_confidence + caller_bonus + test_bonus, 1.0)
-
-    def _determine_layer(self, symbol: dict[str, Any]) -> str:
-        """Determine architectural layer from symbol annotations."""
-        annotations = symbol.get("annotations")
-        if annotations is None:
-            annotations = []
-        elif isinstance(annotations, str):
-            annotations = [a.strip() for a in annotations.split(",") if a.strip()]
-        elif not isinstance(annotations, list):
-            annotations = []
-
-        for annotation in annotations:
-            if "Controller" in annotation:
-                return "controller"
-            elif "Service" in annotation:
-                return "service"
-            elif "Repository" in annotation:
-                return "repository"
-
-        # Default layer based on kind
-        kind = symbol.get("kind", "")
-        if kind == "class":
-            return "domain"
-        return "unknown"

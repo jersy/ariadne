@@ -1,67 +1,66 @@
 """Constraints endpoint for business constraints and anti-patterns."""
 
 import logging
-import os
-
 from fastapi import APIRouter, HTTPException, Query
 
 from ariadne_analyzer.l2_architecture.anti_patterns import AntiPatternDetector
+from ariadne_api.dependencies import get_store
 from ariadne_api.schemas.constraints import (
     AntiPatternViolation,
     ConstraintEntry,
     ConstraintsResponse,
 )
-from ariadne_core.storage.sqlite_store import SQLiteStore
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-
-def get_store() -> SQLiteStore:
-    """Dependency to get SQLite store."""
-    db_path = os.environ.get("ARIADNE_DB_PATH", "ariadne.db")
-    if not os.path.exists(db_path):
-        raise HTTPException(status_code=503, detail="Database not available")
-    return SQLiteStore(db_path)
+# Whitelist of allowed severity values to prevent injection
+ALLOWED_SEVERITIES = {"error", "warning", "info", "critical"}
 
 
 @router.get("/knowledge/constraints", response_model=ConstraintsResponse, tags=["constraints"])
 async def get_constraints(
     context: str | None = Query(None, description="Filter by file path or FQN"),
-    severity: str | None = Query(None, description="Filter by severity (error, warning, info)"),
+    severity: str | None = Query(None, description="Filter by severity (error, warning, info, critical)"),
 ) -> ConstraintsResponse:
     """Get business constraints and detected anti-patterns.
 
     Returns cached constraints and anti-pattern violations. Optionally filter
     by context (file path or symbol FQN) or severity level.
     """
-    store = get_store()
+    # Validate severity against whitelist
+    if severity and severity not in ALLOWED_SEVERITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid severity: {severity}. Must be one of: {', '.join(sorted(ALLOWED_SEVERITIES))}",
+        )
 
-    # Get constraints
-    constraints = _get_constraints(store, context)
+    with get_store() as store:
+        # Get constraints
+        constraints = _get_constraints(store, context)
 
-    # Get anti-patterns
-    anti_patterns = _get_anti_patterns(store, context, severity)
+        # Get anti-patterns
+        anti_patterns = _get_anti_patterns(store, context, severity)
 
-    return ConstraintsResponse(
-        constraints=constraints,
-        anti_patterns=anti_patterns,
-    )
+        return ConstraintsResponse(
+            constraints=constraints,
+            anti_patterns=anti_patterns,
+        )
 
 
 def _get_constraints(
-    store: SQLiteStore,
+    store,
     context: str | None,
 ) -> list[ConstraintEntry]:
     """Get business constraints."""
     cursor = store.conn.cursor()
 
     if context:
-        # Filter by context (file path or FQN)
+        # Filter by context (source FQN or name prefix)
         cursor.execute(
             """
             SELECT * FROM constraints
-            WHERE source_fqn LIKE ? OR file_path LIKE ?
+            WHERE source_fqn LIKE ? OR name LIKE ?
             ORDER BY name
             """,
             (f"{context}%", f"{context}%"),
@@ -91,14 +90,21 @@ def _get_constraints(
 
 
 def _get_anti_patterns(
-    store: SQLiteStore,
+    store,
     context: str | None,
     severity: str | None,
 ) -> list[AntiPatternViolation]:
-    """Get detected anti-pattern violations."""
+    """Get detected anti-pattern violations.
+
+    NOTE: SQL injection safety is ensured by:
+    1. All column names are hardcoded strings (not from user input)
+    2. User values are properly parameterized with ? placeholders
+    3. Severity is validated against ALLOWED_SEVERITIES whitelist
+    """
     cursor = store.conn.cursor()
 
-    # Build query with filters
+    # Build WHERE clause using only hardcoded column names.
+    # User input goes into params (parameterized), never into SQL structure.
     where_clauses = []
     params = []
 
@@ -110,6 +116,7 @@ def _get_anti_patterns(
         where_clauses.append("severity = ?")
         params.append(severity)
 
+    # Safe to join: where_clauses contains only trusted, hardcoded strings
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
     cursor.execute(

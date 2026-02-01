@@ -1,29 +1,18 @@
 """Check endpoint for live code analysis."""
 
 import logging
-import os
+from fastapi import APIRouter
 
-from fastapi import APIRouter, HTTPException
-
-from ariadne_analyzer.l2_architecture.anti_patterns import AntiPatternDetector
+from ariadne_api.dependencies import get_store
 from ariadne_api.schemas.constraints import (
     AntiPatternViolation,
     CheckRequest,
     CheckResult,
-    CodeChange,
 )
-from ariadne_core.storage.sqlite_store import SQLiteStore
+from ariadne_analyzer.l2_architecture.anti_patterns import AntiPatternDetector
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-def get_store() -> SQLiteStore:
-    """Dependency to get SQLite store."""
-    db_path = os.environ.get("ARIADNE_DB_PATH", "ariadne.db")
-    if not os.path.exists(db_path):
-        raise HTTPException(status_code=503, detail="Database not available")
-    return SQLiteStore(db_path)
 
 
 @router.post("/knowledge/check", response_model=CheckResult, tags=["check"])
@@ -33,36 +22,35 @@ async def check_code(request: CheckRequest) -> CheckResult:
     Analyzes the provided code changes for architectural violations and
     anti-patterns. Returns violations, warnings, and suggestions.
     """
-    store = get_store()
-    detector = AntiPatternDetector(store)
+    with get_store() as store:
+        detector = AntiPatternDetector(store)
 
-    # Collect all violations
-    all_violations: list[AntiPatternViolation] = []
+        # Collect all violations
+        all_violations: list[AntiPatternViolation] = []
 
-    # For each change, check for violations
-    for change in request.changes:
-        # Check added symbols
-        for symbol_fqn in change.added_symbols:
-            # Run anti-pattern detection
-            # In production, this would be more sophisticated
-            violations = _check_symbol(store, symbol_fqn)
-            all_violations.extend(violations)
+        # For each change, check for violations
+        for change in request.changes:
+            # Check added symbols
+            for symbol_fqn in change.added_symbols:
+                # Run anti-pattern detection
+                violations = _check_symbol(store, symbol_fqn)
+                all_violations.extend(violations)
 
-    # Separate by severity
-    violations = [v for v in all_violations if v.severity == "error"]
-    warnings = [v for v in all_violations if v.severity in ("warning", "info")]
+        # Separate by severity
+        violations = [v for v in all_violations if v.severity == "error"]
+        warnings = [v for v in all_violations if v.severity in ("warning", "info")]
 
-    # Generate suggestions
-    suggestions = _generate_suggestions(violations + warnings)
+        # Generate suggestions
+        suggestions = _generate_suggestions(violations + warnings)
 
-    return CheckResult(
-        violations=violations,
-        warnings=warnings,
-        suggestions=suggestions,
-    )
+        return CheckResult(
+            violations=violations,
+            warnings=warnings,
+            suggestions=suggestions,
+        )
 
 
-def _check_symbol(store: SQLiteStore, symbol_fqn: str) -> list[AntiPatternViolation]:
+def _check_symbol(store, symbol_fqn: str) -> list[AntiPatternViolation]:
     """Check a single symbol for anti-patterns."""
     violations = []
     detector = AntiPatternDetector(store)

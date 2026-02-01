@@ -40,6 +40,25 @@ CREATE INDEX IF NOT EXISTS idx_edges_relation ON edges(relation);
 CREATE INDEX IF NOT EXISTS idx_edges_from_relation ON edges(from_fqn, relation);
 CREATE INDEX IF NOT EXISTS idx_edges_to_relation ON edges(to_fqn, relation);
 
+-- Cascade delete triggers for edges table
+-- Delete outgoing edges when a symbol is deleted
+CREATE TRIGGER IF NOT EXISTS edges_delete_outgoing_on_symbol_delete
+    AFTER DELETE ON symbols
+    FOR EACH ROW
+    WHEN EXISTS (SELECT 1 FROM edges WHERE from_fqn = OLD.fqn)
+BEGIN
+    DELETE FROM edges WHERE from_fqn = OLD.fqn;
+END;
+
+-- Delete incoming edges when a symbol is deleted
+CREATE TRIGGER IF NOT EXISTS edges_delete_incoming_on_symbol_delete
+    AFTER DELETE ON symbols
+    FOR EACH ROW
+    WHEN EXISTS (SELECT 1 FROM edges WHERE to_fqn = OLD.fqn)
+BEGIN
+    DELETE FROM edges WHERE to_fqn = OLD.fqn;
+END;
+
 -- Index metadata (for tracking indexed state)
 CREATE TABLE IF NOT EXISTS index_metadata (
     key TEXT PRIMARY KEY,
