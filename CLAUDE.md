@@ -146,8 +146,11 @@ mypy ariadne_core/
 
 **使用方法：**
 ```bash
-# 新建 worktree 会自动获得配置
-git worktree add ../feature-x -b feature/x
+# 新建 worktree（使用 wrapper 脚本）
+./scripts/worktree-add.sh ../feature-x -b feature/x
+
+# 注意：Apple Git 不支持 post-worktree hook，必须使用 wrapper 脚本
+# 如果使用标准 git worktree add，配置不会自动同步
 
 # 查看现有 worktree
 git worktree list
@@ -159,7 +162,11 @@ cp ~/.claude-template/settings.json <worktree-path>/.claude/
 **故障排查：**
 - **问题**: 新 worktree 没有 settings.json
   - **解决**: 检查模板是否存在 `ls ~/.claude-template/settings.json`
-  - 重新运行设置脚本
+  - **重新运行设置脚本
+
+- **问题**: 使用 `git worktree add` 后配置没有同步
+  - **原因**: Apple Git 2.39.5 不支持 `post-worktree` hook
+  - **解决**: 使用 `./scripts/worktree-add.sh` 代替 `git worktree add`
 
 - **问题**: JSON 验证失败
   - **解决**: 检查模板 JSON 格式 `jq empty ~/.claude-template/settings.json`
