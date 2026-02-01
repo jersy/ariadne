@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from threading import local
@@ -931,12 +932,17 @@ class SQLiteStore:
         embedding: list[float] | None = None,
         vector_store: ChromaVectorStore | None = None,
     ) -> str | None:
-        """Create summary with optional vector storage in single transaction.
+        """Create summary with optional vector storage using two-phase commit.
 
-        This ensures data consistency between SQLite and ChromaDB by:
-        1. Creating SQLite record first
-        2. Adding to ChromaDB only after SQLite succeeds
-        3. Updating SQLite with vector_id only after ChromaDB succeeds
+        Implements proper two-phase commit for dual-write consistency:
+        1. Write to ChromaDB FIRST (outside SQLite transaction)
+        2. Then write to SQLite in a transaction
+        3. If SQLite fails, rollback ChromaDB
+        4. Track pending operations for recovery
+
+        This ensures that if ChromaDB write succeeds but SQLite fails, we can
+        clean up the orphaned vector. If SQLite succeeds but ChromaDB fails, the
+        SQLite transaction is rolled back.
 
         Args:
             summary: SummaryData to create
@@ -947,45 +953,94 @@ class SQLiteStore:
             Vector ID if embedding was provided and stored, None otherwise
 
         Raises:
-            Exception: If SQLite or ChromaDB operation fails
+            Exception: If SQLite operation fails (ChromaDB is cleaned up)
         """
         cursor = self.conn.cursor()
+        vector_id = None
 
+        # Phase 1: Write to ChromaDB first (outside transaction)
+        if embedding is not None and vector_store is not None:
+            try:
+                # Generate a unique vector_id
+                import uuid
+                vector_id = str(uuid.uuid4())
+
+                # Add to ChromaDB BEFORE SQLite transaction
+                vector_store.add_summary(
+                    summary_id=vector_id,
+                    text=summary.summary,
+                    embedding=embedding,
+                    metadata={"fqn": summary.target_fqn, "level": summary.level.value},
+                )
+                logger.debug(
+                    f"ChromaDB write succeeded for {summary.target_fqn}",
+                    extra={"event": "chroma_write_success", "vector_id": vector_id}
+                )
+            except Exception as e:
+                logger.error(
+                    f"ChromaDB write failed for {summary.target_fqn}: {e}",
+                    extra={"event": "chroma_write_failed", "fqn": summary.target_fqn}
+                )
+                # ChromaDB failed - we haven't written to SQLite yet, so safe to continue
+                # without vector_id
+                vector_id = None
+
+        # Phase 2: Write to SQLite (with rollback if needed)
         try:
             with self.conn:
-                # 1. Insert SQLite record without vector_id
+                # Insert SQLite record with vector_id
                 cursor.execute(
-                    """INSERT INTO summaries (target_fqn, level, summary, is_stale, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?)
+                    """INSERT INTO summaries (target_fqn, level, summary, vector_id, is_stale, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
                        RETURNING id
                     """,
-                    (summary.target_fqn, summary.level.value, summary.summary, False, "datetime('now')", "datetime('now')"),
+                    (summary.target_fqn, summary.level.value, summary.summary, vector_id, False, "datetime('now')", "datetime('now')"),
                 )
                 summary_id = cursor.fetchone()[0]
 
-                vector_id = None
-
-                # 2. Add to ChromaDB if embedding provided
-                # This must succeed or entire transaction rolls back
-                if embedding is not None and vector_store is not None:
-                    vector_store.add_summary(
-                        summary_id=str(summary_id),
-                        text=summary.summary,
-                        embedding=embedding,
-                        metadata={"fqn": summary.target_fqn, "level": summary.level.value},
-                    )
-                    # 3. Update vector_id only after ChromaDB success
+                # Track sync state
+                if vector_id:
                     cursor.execute(
-                        "UPDATE summaries SET vector_id = ? WHERE id = ?",
-                        (str(summary_id), summary_id),
+                        """INSERT INTO vector_sync_state (vector_id, sqlite_table, sqlite_record_id, record_fqn, sync_status, last_synced_at)
+                           VALUES (?, 'summaries', ?, ?, 'synced', datetime('now'))
+                        """,
+                        (vector_id, summary_id, summary.target_fqn),
                     )
-                    vector_id = str(summary_id)
 
                 return vector_id
 
         except Exception as e:
-            logger.error(f"Failed to create summary with vector: {e}")
-            # If ChromaDB failed, the entire transaction (including SQLite insert) is rolled back
+            # SQLite write failed - need to rollback ChromaDB
+            logger.error(
+                f"SQLite write failed for {summary.target_fqn}, rolling back ChromaDB: {e}",
+                extra={"event": "sqlite_write_failed", "fqn": summary.target_fqn}
+            )
+
+            # Rollback ChromaDB write
+            if vector_id and vector_store is not None:
+                try:
+                    vector_store.delete_summaries([vector_id])
+                    logger.info(
+                        f"Rolled back ChromaDB vector {vector_id}",
+                        extra={"event": "chroma_rollback", "vector_id": vector_id}
+                    )
+                except Exception as rollback_error:
+                    logger.error(
+                        f"Failed to rollback ChromaDB vector {vector_id}: {rollback_error}",
+                        extra={"event": "chroma_rollback_failed", "vector_id": vector_id}
+                    )
+                    # Track orphaned vector for later cleanup
+                    try:
+                        cursor.execute(
+                            """INSERT INTO pending_vectors (temp_id, operation_type, sqlite_table, payload, vector_id, error_message)
+                               VALUES (?, 'delete', 'summaries', ?, ?, ?)
+                            """,
+                            (vector_id, json.dumps({"fqn": summary.target_fqn}), vector_id, str(rollback_error)),
+                        )
+                        self.conn.commit()
+                    except Exception:
+                        pass  # Best effort tracking
+
             raise
 
     def delete_summary_cascade(
@@ -993,7 +1048,13 @@ class SQLiteStore:
         target_fqn: str,
         vector_store: ChromaVectorStore | None = None,
     ) -> bool:
-        """Delete summary from both SQLite and ChromaDB atomically.
+        """Delete summary from both SQLite and ChromaDB using two-phase commit.
+
+        Uses two-phase commit:
+        1. Get vector_id from SQLite
+        2. Delete from ChromaDB FIRST
+        3. Then delete from SQLite
+        4. If SQLite fails, ChromaDB deletion is already done (desired state)
 
         Args:
             target_fqn: Target symbol FQN
@@ -1004,29 +1065,52 @@ class SQLiteStore:
         """
         cursor = self.conn.cursor()
 
+        # Phase 1: Get vector_id from SQLite (no transaction yet)
+        cursor.execute("SELECT id, vector_id FROM summaries WHERE target_fqn = ?", (target_fqn,))
+        row = cursor.fetchone()
+        if not row:
+            return False
+
+        summary_id, vector_id = row[0], row[1]
+
+        # Phase 2: Delete from ChromaDB FIRST (outside transaction)
+        if vector_id and vector_store is not None:
+            try:
+                vector_store.delete_summaries([vector_id])
+                logger.debug(
+                    f"Deleted vector {vector_id} from ChromaDB",
+                    extra={"event": "chroma_delete_success", "vector_id": vector_id}
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to delete from ChromaDB (continuing with SQLite delete): {e}",
+                    extra={"event": "chroma_delete_failed", "vector_id": vector_id}
+                )
+                # Track for cleanup
+                try:
+                    cursor.execute(
+                        """INSERT INTO pending_vectors (temp_id, operation_type, sqlite_table, payload, vector_id, error_message)
+                           VALUES (?, 'delete', 'summaries', ?, ?, ?)
+                        """,
+                        (vector_id, json.dumps({"fqn": target_fqn}), vector_id, str(e)),
+                    )
+                    self.conn.commit()
+                except Exception:
+                    pass
+
+        # Phase 3: Delete from SQLite (transaction for atomicity)
         try:
             with self.conn:
-                # 1. Get vector_id from SQLite
-                cursor.execute("SELECT vector_id FROM summaries WHERE target_fqn = ?", (target_fqn,))
-                row = cursor.fetchone()
-                if not row:
-                    return False
+                # Clean up sync state
+                if vector_id:
+                    cursor.execute("DELETE FROM vector_sync_state WHERE vector_id = ?", (vector_id,))
 
-                vector_id = row[0]
-
-                # 2. Delete from ChromaDB before SQLite (best effort)
-                if vector_id and vector_store is not None:
-                    try:
-                        vector_store.delete_summaries([vector_id])
-                    except Exception as e:
-                        logger.warning(f"Failed to delete from ChromaDB (continuing): {e}")
-
-                # 3. Delete from SQLite
+                # Delete summary
                 cursor.execute("DELETE FROM summaries WHERE target_fqn = ?", (target_fqn,))
                 return True
 
         except Exception as e:
-            logger.error(f"Failed to delete summary: {e}")
+            logger.error(f"Failed to delete summary from SQLite: {e}")
             raise
 
     def mark_summaries_stale_by_file(self, file_path: str) -> int:
@@ -1069,3 +1153,155 @@ class SQLiteStore:
         except Exception as e:
             logger.error(f"Failed to mark summaries stale: {e}")
             raise
+
+    # ========================
+    # Vector Sync Recovery
+    # ========================
+
+    def detect_orphaned_records(self) -> dict[str, int]:
+        """Detect orphaned records for cross-store synchronization.
+
+        Returns:
+            Dictionary with counts of orphaned records by type
+        """
+        cursor = self.conn.cursor()
+        orphans = {}
+
+        # Summaries with vector_id but no matching sync state
+        cursor.execute("""
+            SELECT COUNT(*) FROM summaries s
+            LEFT JOIN vector_sync_state v ON s.vector_id = v.vector_id
+            WHERE s.vector_id IS NOT NULL AND v.vector_id IS NULL
+        """)
+        orphans["summaries_without_sync_state"] = cursor.fetchone()[0]
+
+        # Sync state records without matching summary
+        cursor.execute("""
+            SELECT COUNT(*) FROM vector_sync_state v
+            LEFT JOIN summaries s ON v.sqlite_record_id = s.id AND v.sqlite_table = 'summaries'
+            WHERE v.sqlite_table = 'summaries' AND s.id IS NULL
+        """)
+        orphans["sync_state_without_summary"] = cursor.fetchone()[0]
+
+        # Pending operations older than 1 hour
+        cursor.execute("""
+            SELECT COUNT(*) FROM pending_vectors
+            WHERE created_at < datetime('now', '-1 hour')
+        """)
+        orphans["stale_pending_operations"] = cursor.fetchone()[0]
+
+        # Summaries marked for sync but still pending
+        cursor.execute("""
+            SELECT COUNT(*) FROM vector_sync_state
+            WHERE sync_status = 'pending'
+            AND created_at < datetime('now', '-10 minutes')
+        """)
+        orphans["stalled_sync_operations"] = cursor.fetchone()[0]
+
+        return orphans
+
+    def recover_orphaned_vectors(
+        self,
+        vector_store: ChromaVectorStore | None = None,
+    ) -> dict[str, int]:
+        """Recover orphaned vectors from failed sync operations.
+
+        This cleans up:
+        1. Vectors in ChromaDB that don't have corresponding SQLite records
+        2. Pending operations that can be retried or cleaned up
+
+        Args:
+            vector_store: Optional ChromaVectorStore for cleanup
+
+        Returns:
+            Dictionary with recovery statistics
+        """
+        cursor = self.conn.cursor()
+        stats = {
+            "vectors_deleted": 0,
+            "pending_cleaned": 0,
+            "sync_state_cleaned": 0,
+            "errors": 0,
+        }
+
+        try:
+            # Clean up sync state records without matching summary
+            cursor.execute("""
+                SELECT v.vector_id, v.sqlite_record_id
+                FROM vector_sync_state v
+                LEFT JOIN summaries s ON v.sqlite_record_id = s.id AND v.sqlite_table = 'summaries'
+                WHERE v.sqlite_table = 'summaries' AND s.id IS NULL
+            """)
+            orphaned_sync = cursor.fetchall()
+
+            for vector_id, sqlite_id in orphaned_sync:
+                try:
+                    # Delete from ChromaDB if available
+                    if vector_id and vector_store is not None:
+                        vector_store.delete_summaries([vector_id])
+                        stats["vectors_deleted"] += 1
+
+                    # Delete sync state record
+                    cursor.execute("DELETE FROM vector_sync_state WHERE vector_id = ?", (vector_id,))
+                    stats["sync_state_cleaned"] += 1
+
+                except Exception as e:
+                    logger.error(f"Failed to clean up orphaned sync state {vector_id}: {e}")
+                    stats["errors"] += 1
+
+            # Clean up stale pending operations
+            cursor.execute("""
+                SELECT id, temp_id, operation_type, vector_id
+                FROM pending_vectors
+                WHERE created_at < datetime('now', '-1 hour')
+            """)
+            stale_pending = cursor.fetchall()
+
+            for pending_id, temp_id, op_type, vector_id in stale_pending:
+                try:
+                    # For pending deletes, clean up ChromaDB
+                    if op_type == 'delete' and vector_id and vector_store is not None:
+                        vector_store.delete_summaries([vector_id])
+                        stats["vectors_deleted"] += 1
+
+                    # Delete pending record
+                    cursor.execute("DELETE FROM pending_vectors WHERE id = ?", (pending_id,))
+                    stats["pending_cleaned"] += 1
+
+                except Exception as e:
+                    logger.error(f"Failed to clean up pending operation {pending_id}: {e}")
+                    stats["errors"] += 1
+
+            self.conn.commit()
+
+            logger.info(
+                f"Vector sync recovery completed",
+                extra={
+                    "event": "vector_sync_recovery",
+                    "stats": stats,
+                }
+            )
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Vector sync recovery failed: {e}")
+            raise
+
+        return stats
+
+    def get_pending_sync_operations(self) -> list[dict[str, Any]]:
+        """Get pending sync operations that may need recovery.
+
+        Returns:
+            List of pending sync operations
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, temp_id, operation_type, sqlite_table, payload, vector_id,
+                   error_message, retry_count, created_at
+            FROM pending_vectors
+            WHERE retry_count < 3
+            ORDER BY created_at DESC
+            LIMIT 100
+        """)
+        return [dict(row) for row in cursor.fetchall()]

@@ -189,9 +189,50 @@ CREATE TABLE IF NOT EXISTS job_metadata (
 );
 """
 
+# Phase 5 (Integrity): Cross-store synchronization tracking
+SCHEMA_INTEGRITY = """
+-- Vector sync state tracking for dual-write consistency
+-- Tracks synchronization between SQLite and ChromaDB
+CREATE TABLE IF NOT EXISTS vector_sync_state (
+    id INTEGER PRIMARY KEY,
+    vector_id TEXT NOT NULL UNIQUE,
+    sqlite_table TEXT NOT NULL CHECK(sqlite_table IN ('summaries', 'glossary', 'constraints')),
+    sqlite_record_id INTEGER NOT NULL,
+    record_fqn TEXT,
+    sync_status TEXT NOT NULL CHECK(sync_status IN ('pending', 'synced', 'failed')),
+    last_synced_at TIMESTAMP,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_vector_sync_status ON vector_sync_state(sync_status);
+CREATE INDEX IF NOT EXISTS idx_vector_sync_table ON vector_sync_state(sqlite_table, sqlite_record_id);
+CREATE INDEX IF NOT EXISTS idx_vector_sync_vector_id ON vector_sync_state(vector_id);
+
+-- Pending operations for recovery
+CREATE TABLE IF NOT EXISTS pending_vectors (
+    id INTEGER PRIMARY KEY,
+    temp_id TEXT NOT NULL UNIQUE,
+    operation_type TEXT NOT NULL CHECK(operation_type IN ('create', 'update', 'delete')),
+    sqlite_table TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    vector_id TEXT,
+    error_message TEXT,
+    retry_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_temp_id ON pending_vectors(temp_id);
+CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_vectors(operation_type, retry_count);
+CREATE INDEX IF NOT EXISTS idx_pending_created ON pending_vectors(created_at);
+"""
+
 ALL_SCHEMAS = {
     "l3": SCHEMA_L3,
     "l2": SCHEMA_L2,
     "l1": SCHEMA_L1,
     "jobs": SCHEMA_JOBS,
+    "integrity": SCHEMA_INTEGRITY,
 }
