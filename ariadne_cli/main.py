@@ -286,7 +286,9 @@ def main() -> int:
         return _cmd_check(args)
 
     if args.command == "serve":
-        print(f"Server would start on port {args.port} (not implemented yet)")
+        from ariadne_api.app import run_server
+        print(f"Starting Ariadne API server on port {args.port}")
+        run_server(host="0.0.0.0", port=args.port)
         return 0
 
     # ========================

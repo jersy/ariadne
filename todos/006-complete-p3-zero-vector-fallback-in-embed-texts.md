@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p3
 issue_id: "006"
 tags:
@@ -163,18 +163,20 @@ Check if any code relies on the current zero-vector behavior:
 
 ## Acceptance Criteria
 
-- [ ] `embed_texts()` raises `ValueError` for empty texts
-- [ ] `embed_text()` raises `ValueError` for empty text
-- [ ] Error message is clear and actionable
-- [ ] Tests verify error is raised for empty texts
-- [ ] Tests verify normal texts still work
-- [ ] All call sites updated to filter empty texts
+- [x] `embed_texts()` raises `ValueError` for empty texts
+- [x] `embed_text()` raises `ValueError` for empty text
+- [x] Error message is clear and actionable
+- [x] Tests verify error is raised for empty texts
+- [x] Tests verify normal texts still work
+- [x] All call sites updated to filter empty texts
 
 ## Work Log
 
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-01 | Code review completed | Zero vector fallback identified |
+| 2026-02-02 | Verified fix already implemented | embed_text() and embed_texts() already raise ValueError |
+| 2026-02-02 | Verified tests pass | test_embed_text_raises_error_for_empty_text, test_embed_texts_raises_error_for_empty_texts |
 
 ## Resources
 
