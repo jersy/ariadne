@@ -140,8 +140,38 @@ CREATE INDEX IF NOT EXISTS idx_constraints_type ON constraints(constraint_type);
 CREATE INDEX IF NOT EXISTS idx_constraints_vector_id ON constraints(vector_id);
 """
 
+# Phase 4 (API): Job queue for async rebuild operations
+SCHEMA_JOBS = """
+-- Rebuild jobs for async processing
+CREATE TABLE IF NOT EXISTS impact_jobs (
+    id INTEGER PRIMARY KEY,
+    job_id TEXT NOT NULL UNIQUE,
+    mode TEXT NOT NULL CHECK(mode IN ('full', 'incremental')),
+    status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'complete', 'failed')),
+    progress INTEGER DEFAULT 0,
+    total_files INTEGER DEFAULT 0,
+    processed_files INTEGER DEFAULT 0,
+    target_paths TEXT,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_impact_jobs_job_id ON impact_jobs(job_id);
+CREATE INDEX IF NOT EXISTS idx_impact_jobs_status ON impact_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_impact_jobs_created ON impact_jobs(created_at);
+
+-- Job metadata for queue management
+CREATE TABLE IF NOT EXISTS job_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
 ALL_SCHEMAS = {
     "l3": SCHEMA_L3,
     "l2": SCHEMA_L2,
     "l1": SCHEMA_L1,
+    "jobs": SCHEMA_JOBS,
 }
