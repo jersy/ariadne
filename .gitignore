@@ -13,3 +13,10 @@ build/
 .ruff_cache/
 .claude/
 ariadne_vectors/
+# SQLite temporary files
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Coverage
+.coverage
