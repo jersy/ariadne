@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
+from pathlib import Path
 from threading import local
 from typing import Any
 
@@ -1684,3 +1686,245 @@ class SQLiteStore:
         cursor = self.conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM glossary")
         return cursor.fetchone()[0]
+
+    # ========================
+    # Test Mapping and Coverage
+    # ========================
+
+    def get_test_mapping(self, fqn: str) -> dict[str, Any]:
+        """Get test file mappings for a source symbol.
+
+        Uses Maven Surefire test naming conventions to find test files:
+        - Test*.java (e.g., TestUserService.java)
+        - *Test.java (e.g., UserServiceTest.java) - RECOMMENDED
+        - *Tests.java (e.g., UserServiceTests.java)
+        - *IT.java (e.g., UserServiceIT.java - integration tests)
+
+        Args:
+            fqn: Source symbol FQN
+
+        Returns:
+            Dictionary with source_fqn, source_file, and test_mappings list
+        """
+        # Get source symbol
+        symbol = self.get_symbol(fqn)
+        if not symbol or not symbol.get("file_path"):
+            return {
+                "source_fqn": fqn,
+                "source_file": None,
+                "test_mappings": [],
+            }
+
+        source_file = symbol["file_path"]
+        source_path = Path(source_file)
+
+        # Generate test file paths based on naming conventions
+        test_mappings = []
+        test_paths = self._generate_test_paths(source_path)
+
+        for test_path_str in test_paths:
+            test_path = Path(test_path_str)
+            test_exists = test_path.exists()
+
+            # Extract test methods if test file exists
+            test_methods = []
+            if test_exists:
+                test_methods = self._extract_test_methods(test_path)
+
+            # Get test file name as pattern
+            test_file_name = test_path.name
+
+            test_mappings.append({
+                "test_file": str(test_path),
+                "test_exists": test_exists,
+                "test_pattern": test_file_name,
+                "test_methods": test_methods,
+            })
+
+        return {
+            "source_fqn": fqn,
+            "source_file": source_file,
+            "test_mappings": test_mappings,
+        }
+
+    def _generate_test_paths(self, source_path: Path) -> list[str]:
+        """Generate possible test file paths from source path.
+
+        Based on Maven Surefire conventions:
+        - src/main/java/.../Foo.java -> src/test/java/.../FooTest.java
+        - src/main/java/.../Foo.java -> src/test/java/.../FooTests.java
+        - src/main/java/.../Foo.java -> src/test/java/.../FooIT.java
+        """
+        path_str = str(source_path)
+
+        # Replace main/java with test/java
+        if "/main/java/" in path_str:
+            test_base = path_str.replace("/main/java/", "/test/java/")
+        elif "\\main\\java\\" in path_str:
+            test_base = path_str.replace("\\main\\java\\", "\\test\\java\\")
+        else:
+            # No standard Maven/Gradle structure
+            return []
+
+        # Remove .java extension
+        if test_base.endswith(".java"):
+            test_base = test_base[:-5]
+
+        # Generate test file names based on conventions
+        test_paths = []
+        base_class_name = Path(test_base).stem
+
+        for suffix in ["Test", "Tests", "IT"]:
+            test_dir = Path(test_base).parent
+            test_path = test_dir / f"{base_class_name}{suffix}.java"
+            test_paths.append(str(test_path))
+
+        return test_paths
+
+    def _extract_test_methods(self, test_file: Path) -> list[str]:
+        """Extract test method names from a test file.
+
+        Looks for methods annotated with @Test or starting with "test".
+
+        Args:
+            test_file: Path to the test file
+
+        Returns:
+            List of test method names
+        """
+        try:
+            content = test_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+
+        test_methods = []
+        # Match @Test annotation followed by method declaration
+        test_pattern = re.compile(r'@Test\s+(?:public\s+)?(?:static\s+)?(?:\w+\s+)+(\w+)\s*\(')
+        for match in test_pattern.finditer(content):
+            test_methods.append(match.group(1))
+
+        # Also match methods starting with "test" (without @Test)
+        test_method_pattern = re.compile(
+            r'(?:public|protected|private)?\s+(?:static\s+)?(?:\w+\s+)+test(\w+)\s*\(',
+            re.MULTILINE
+        )
+        for match in test_method_pattern.finditer(content):
+            method_name = "test" + match.group(1)
+            if method_name not in test_methods:
+                test_methods.append(method_name)
+
+        return test_methods
+
+    def analyze_coverage(self, fqn: str) -> dict[str, Any]:
+        """Analyze test coverage for a target symbol.
+
+        Uses the edges table to find all callers and determines which
+        callers have test coverage.
+
+        Args:
+            fqn: Target symbol FQN
+
+        Returns:
+            Dictionary with statistics, callers list, and warnings
+        """
+        cursor = self.conn.cursor()
+
+        # Get all callers (incoming edges)
+        cursor.execute(
+            """SELECT DISTINCT e.from_fqn, s.kind, s.name, s.file_path
+               FROM edges e
+               JOIN symbols s ON e.from_fqn = s.fqn
+               WHERE e.to_fqn = ?""",
+            (fqn,)
+        )
+        callers = [dict(row) for row in cursor.fetchall()]
+
+        total_callers = len(callers)
+        tested_callers = 0
+        caller_info_list = []
+        warnings = []
+
+        for caller in callers:
+            caller_fqn = caller["from_fqn"]
+            caller_file = caller.get("file_path", "")
+
+            # Determine if caller is a test file
+            is_test_file = self._is_test_file(caller_file)
+
+            # Check if caller has test coverage
+            test_mapping = self.get_test_mapping(caller_fqn)
+            has_test_coverage = any(
+                tm["test_exists"] for tm in test_mapping["test_mappings"]
+            )
+
+            if is_test_file or has_test_coverage:
+                tested_callers += 1
+                is_covered = True
+            else:
+                is_covered = False
+                # Generate warning for uncovered caller
+                warnings.append({
+                    "type": "untested_caller",
+                    "severity": "medium",
+                    "message": f"{caller.get('name', caller_fqn)} 调用了 {fqn} 但无测试覆盖",
+                    "caller_fqn": caller_fqn,
+                })
+
+            caller_info_list.append({
+                "caller_fqn": caller_fqn,
+                "caller_kind": caller.get("kind"),
+                "caller_name": caller.get("name"),
+                "caller_file": caller_file,
+                "is_test_file": is_test_file,
+                "is_covered": is_covered,
+            })
+
+        # Calculate coverage percentage
+        coverage_percentage = 0.0
+        if total_callers > 0:
+            coverage_percentage = (tested_callers / total_callers) * 100.0
+
+        return {
+            "target_fqn": fqn,
+            "statistics": {
+                "total_callers": total_callers,
+                "tested_callers": tested_callers,
+                "coverage_percentage": round(coverage_percentage, 2),
+            },
+            "callers": caller_info_list,
+            "warnings": warnings,
+        }
+
+    def _is_test_file(self, file_path: str) -> bool:
+        """Determine if a file is a test file based on path patterns.
+
+        Checks for:
+        - Path contains /test/ or \\test\\
+        - Filename matches test patterns (Test*.java, *Test.java, *Tests.java, *IT.java)
+
+        Args:
+            file_path: File path to check
+
+        Returns:
+            True if the file appears to be a test file
+        """
+        if not file_path:
+            return False
+
+        path_lower = file_path.lower()
+
+        # Check if path contains test directory
+        if "/test/" in path_lower or "\\test\\" in path_lower:
+            return True
+
+        # Check filename patterns
+        filename = Path(file_path).name
+        if (
+            filename.startswith("Test") or
+            filename.endswith("Test.java") or
+            filename.endswith("Tests.java") or
+            filename.endswith("IT.java")
+        ):
+            return True
+
+        return False

@@ -21,6 +21,7 @@ from ariadne_api.routes.jobs import router as jobs_router
 from ariadne_api.routes.rebuild import router as rebuild_router
 from ariadne_api.routes.search import router as search_router
 from ariadne_api.routes.symbol import router as symbol_router
+from ariadne_api.routes import tests as tests_router
 from ariadne_api.schemas.common import HealthResponse
 
 # Get configuration from environment
@@ -108,6 +109,7 @@ app.include_router(jobs_router, prefix=f"/api/{API_VERSION}", tags=["jobs"])
 app.include_router(constraints_router, prefix=f"/api/{API_VERSION}", tags=["constraints"])
 app.include_router(check_router, prefix=f"/api/{API_VERSION}", tags=["check"])
 app.include_router(glossary_router, prefix=f"/api/{API_VERSION}/knowledge", tags=["glossary"])
+app.include_router(tests_router.router, prefix=f"/api/{API_VERSION}/knowledge", tags=["tests"])
 
 # Legacy unversioned endpoints for backward compatibility (deprecated)
 # TODO: Add deprecation warning headers
@@ -122,6 +124,7 @@ if _app_include_legacy:
     app.include_router(constraints_router, tags=["constraints (deprecated)"])
     app.include_router(check_router, tags=["check (deprecated)"])
     app.include_router(glossary_router, prefix="/api/knowledge", tags=["glossary (deprecated)"])
+    app.include_router(tests_router.router, prefix="/api/knowledge", tags=["tests (deprecated)"])
 
 
 @app.get("/", tags=["root"])
