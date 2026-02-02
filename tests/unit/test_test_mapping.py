@@ -271,3 +271,30 @@ class TestExtractTestMethods:
         methods = store._extract_test_methods(Path("nonexistent.java"))
 
         assert methods == []
+
+
+class TestBatchOperations:
+    """Tests for batch operation logic at storage layer."""
+
+    def test_multiple_test_mappings_work(self, store_with_sample_data):
+        """Test that get_test_mapping works for multiple FQNs."""
+        # Test that the method works for multiple symbols
+        mapping1 = store_with_sample_data.get_test_mapping("com.example.service.UserService")
+        mapping2 = store_with_sample_data.get_test_mapping("com.example.controller.UserController")
+
+        assert mapping1["source_fqn"] == "com.example.service.UserService"
+        assert mapping2["source_fqn"] == "com.example.controller.UserController"
+
+    def test_multiple_coverage_analyses_work(self, store_with_sample_data):
+        """Test that analyze_coverage works for multiple FQNs."""
+        # Test that the method works for multiple symbols
+        coverage1 = store_with_sample_data.analyze_coverage("com.example.service.UserService")
+        coverage2 = store_with_sample_data.analyze_coverage("com.example.controller.UserController")
+
+        assert coverage1["target_fqn"] == "com.example.service.UserService"
+        assert coverage2["target_fqn"] == "com.example.controller.UserController"
+
+        # Verify statistics structure
+        assert "statistics" in coverage1
+        assert "total_callers" in coverage1["statistics"]
+        assert "coverage_percentage" in coverage1["statistics"]

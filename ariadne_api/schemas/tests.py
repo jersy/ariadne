@@ -55,3 +55,50 @@ class CoverageAnalysisResponse(BaseModel):
     statistics: CoverageStats = Field(description="Coverage statistics")
     callers: list[CallerInfo] = Field(description="List of caller information")
     warnings: list[CoverageWarning] = Field(description="List of coverage warnings")
+
+
+# ========================
+# Batch Operations Schemas (P2 #036)
+# ========================
+
+class BatchTestMappingRequest(BaseModel):
+    """Request for batch test mapping."""
+
+    fqns: list[str] = Field(description="List of source symbol FQNs to map", min_length=1, max_length=100)
+    include_methods: bool = Field(default=True, description="Include test methods in response")
+
+
+class BatchTestMappingSummary(BaseModel):
+    """Summary statistics for batch test mapping."""
+
+    total: int = Field(description="Total number of FQNs requested")
+    found: int = Field(description="Number of symbols found in database")
+    with_tests: int = Field(description="Number of symbols with existing test files")
+
+
+class BatchTestMappingResponse(BaseModel):
+    """Response from batch test mapping endpoint."""
+
+    mappings: dict[str, TestMappingResponse] = Field(description="Test mappings by FQN")
+    summary: BatchTestMappingSummary = Field(description="Summary statistics")
+
+
+class BatchCoverageRequest(BaseModel):
+    """Request for batch coverage analysis."""
+
+    targets: list[str] = Field(description="List of target symbol FQNs to analyze", min_length=1, max_length=100)
+
+
+class BatchCoverageSummary(BaseModel):
+    """Summary statistics for batch coverage analysis."""
+
+    total: int = Field(description="Total number of targets requested")
+    average_coverage: float = Field(description="Average coverage percentage across all targets")
+    total_warnings: int = Field(description="Total warnings across all targets")
+
+
+class BatchCoverageResponse(BaseModel):
+    """Response from batch coverage analysis endpoint."""
+
+    coverage: dict[str, CoverageAnalysisResponse] = Field(description="Coverage analysis by target FQN")
+    summary: BatchCoverageSummary = Field(description="Summary statistics")

@@ -33,6 +33,15 @@ class SQLiteStore:
     Handles symbol indexing, edge storage, and graph queries.
     """
 
+    # Pre-compiled regex patterns (class constants for performance)
+    _TEST_METHOD_PATTERN = re.compile(
+        r'@Test\s+(?:public\s+)?(?:static\s+)?(?:\w+\s+)+(\w+)\s*\('
+    )
+    _TEST_METHOD_NAME_PATTERN = re.compile(
+        r'(?:public|protected|private)?\s+(?:static\s+)?(?:\w+\s+)+test(\w+)\s*\(',
+        re.MULTILINE
+    )
+
     def __init__(self, db_path: str = "ariadne.db", init: bool = False):
         self.db_path = db_path
         self._local = local()
@@ -1798,17 +1807,12 @@ class SQLiteStore:
             return []
 
         test_methods = []
-        # Match @Test annotation followed by method declaration
-        test_pattern = re.compile(r'@Test\s+(?:public\s+)?(?:static\s+)?(?:\w+\s+)+(\w+)\s*\(')
-        for match in test_pattern.finditer(content):
+        # Use cached class regex patterns (P2 #034 fix)
+        for match in self._TEST_METHOD_PATTERN.finditer(content):
             test_methods.append(match.group(1))
 
         # Also match methods starting with "test" (without @Test)
-        test_method_pattern = re.compile(
-            r'(?:public|protected|private)?\s+(?:static\s+)?(?:\w+\s+)+test(\w+)\s*\(',
-            re.MULTILINE
-        )
-        for match in test_method_pattern.finditer(content):
+        for match in self._TEST_METHOD_NAME_PATTERN.finditer(content):
             method_name = "test" + match.group(1)
             if method_name not in test_methods:
                 test_methods.append(method_name)
@@ -1829,7 +1833,7 @@ class SQLiteStore:
         """
         cursor = self.conn.cursor()
 
-        # Get all callers (incoming edges)
+        # Get all callers (incoming edges) - single query
         cursor.execute(
             """SELECT DISTINCT e.from_fqn, s.kind, s.name, s.file_path
                FROM edges e
@@ -1847,33 +1851,31 @@ class SQLiteStore:
         for caller in callers:
             caller_fqn = caller["from_fqn"]
             caller_file = caller.get("file_path", "")
+            caller_name = caller.get("name", caller_fqn)
 
-            # Determine if caller is a test file
+            # Determine if caller is a test file (uses file_path from query)
             is_test_file = self._is_test_file(caller_file)
 
-            # Check if caller has test coverage
-            test_mapping = self.get_test_mapping(caller_fqn)
-            has_test_coverage = any(
-                tm["test_exists"] for tm in test_mapping["test_mappings"]
-            )
+            # P2 #033 fix: Simplified coverage check - caller is covered if it's a test file
+            # No need for additional get_test_mapping() call in the loop
+            is_covered = is_test_file
 
-            if is_test_file or has_test_coverage:
+            if is_test_file:
                 tested_callers += 1
-                is_covered = True
             else:
-                is_covered = False
-                # Generate warning for uncovered caller
+                # Generate warning for uncovered non-test caller
+                # P2 #039 fix: Use English instead of Chinese
                 warnings.append({
                     "type": "untested_caller",
                     "severity": "medium",
-                    "message": f"{caller.get('name', caller_fqn)} 调用了 {fqn} 但无测试覆盖",
+                    "message": f"{caller_name} calls {fqn} but has no test coverage",
                     "caller_fqn": caller_fqn,
                 })
 
             caller_info_list.append({
                 "caller_fqn": caller_fqn,
                 "caller_kind": caller.get("kind"),
-                "caller_name": caller.get("name"),
+                "caller_name": caller_name,
                 "caller_file": caller_file,
                 "is_test_file": is_test_file,
                 "is_covered": is_covered,
