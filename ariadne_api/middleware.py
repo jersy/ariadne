@@ -63,13 +63,26 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             },
         )
 
+        # Track metrics
+        from ariadne_api.metrics import get_metrics_collector
+        metrics_collector = get_metrics_collector()
+        metrics_collector.increment_active_requests()
+
         # Process request
         try:
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
 
             # Calculate duration
-            duration_ms = int((time.time() - start_time) * 1000)
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Record metrics
+            metrics_collector.record_request(
+                method=request.method,
+                path=request.url.path,
+                duration_ms=duration_ms,
+                status_code=response.status_code,
+            )
 
             # Log response with timing
             self.logger.info(
@@ -79,18 +92,27 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                     "method": request.method,
                     "path": request.url.path,
                     "status_code": response.status_code,
-                    "duration_ms": duration_ms,
+                    "duration_ms": f"{duration_ms:.2f}",
                     "client": client_host,
                 },
             )
 
             # Add timing header for debugging
-            response.headers["X-Process-Time-ms"] = str(duration_ms)
+            response.headers["X-Process-Time-ms"] = f"{duration_ms:.2f}"
 
             return response
 
         except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Record error metrics
+            metrics_collector.record_request(
+                method=request.method,
+                path=request.url.path,
+                duration_ms=duration_ms,
+                status_code=500,
+            )
+
             self.logger.exception(
                 "request_error",
                 extra={
@@ -99,11 +121,13 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                     "path": request.url.path,
                     "client": client_host,
                     "error": str(e),
-                    "duration_ms": duration_ms,
+                    "duration_ms": f"{duration_ms:.2f}",
                     "error_type": type(e).__name__,
                 },
             )
             raise
+        finally:
+            metrics_collector.decrement_active_requests()
 
 
 class TracingMiddleware(BaseHTTPMiddleware):

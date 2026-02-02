@@ -18,6 +18,7 @@ from ariadne_api.routes.glossary import router as glossary_router
 from ariadne_api.routes.health import router as health_router
 from ariadne_api.routes.impact import router as impact_router
 from ariadne_api.routes.jobs import router as jobs_router
+from ariadne_api.routes.metrics import router as metrics_router
 from ariadne_api.routes.rebuild import router as rebuild_router
 from ariadne_api.routes.search import router as search_router
 from ariadne_api.routes.symbol import router as symbol_router
@@ -110,6 +111,7 @@ app.include_router(constraints_router, prefix=f"/api/{API_VERSION}", tags=["cons
 app.include_router(check_router, prefix=f"/api/{API_VERSION}", tags=["check"])
 app.include_router(glossary_router, prefix=f"/api/{API_VERSION}/knowledge", tags=["glossary"])
 app.include_router(tests_router.router, prefix=f"/api/{API_VERSION}/knowledge", tags=["tests"])
+app.include_router(metrics_router, prefix=f"/api/{API_VERSION}", tags=["metrics"])
 
 # Legacy unversioned endpoints for backward compatibility (deprecated)
 # TODO: Add deprecation warning headers
