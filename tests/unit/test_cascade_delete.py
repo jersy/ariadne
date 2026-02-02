@@ -224,3 +224,129 @@ def test_cascade_delete_with_nonexistent_fqn(populated_store):
     cursor.execute("SELECT COUNT(*) FROM edges")
     edges_count = cursor.fetchone()[0]
     assert edges_count >= 0  # Should not cause database corruption
+
+
+class TestMigrationSystem:
+    """Test database migration system for cascade deletes."""
+
+    def test_migration_creates_migrations_table(self):
+        """Test that migration system creates migrations table."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            # Create store - should run migrations
+            store = SQLiteStore(db_path, init=True)
+
+            # Check migrations table exists
+            cursor = store.conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='_migrations'"
+            )
+            result = cursor.fetchone()
+            assert result is not None, "Migrations table should be created"
+
+            # Check migration was recorded
+            cursor.execute("SELECT version FROM _migrations")
+            applied = [row[0] for row in cursor.fetchall()]
+            assert "001" in applied, "Migration 001 should be recorded"
+
+            store.close()
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    def test_migration_adds_triggers(self):
+        """Test that migration adds cascade delete triggers."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            store = SQLiteStore(db_path, init=True)
+            cursor = store.conn.cursor()
+
+            # Check triggers exist
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='trigger' AND name LIKE '%edges_delete%'
+            """)
+            triggers = [row[0] for row in cursor.fetchall()]
+
+            assert "edges_delete_outgoing_on_symbol_delete" in triggers
+            assert "edges_delete_incoming_on_symbol_delete" in triggers
+
+            store.close()
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    def test_migration_runs_on_existing_db(self):
+        """Test that migrations run on existing databases without init."""
+        import sqlite3
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            # Create a database without migrations (old version)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+
+            # Create tables WITHOUT triggers (simulating old version)
+            # Use the full schema to avoid conflicts
+            from ariadne_core.storage.schema import ALL_SCHEMAS
+
+            cursor = conn.cursor()
+            # Run all schemas EXCEPT we'll remove triggers after to test migration
+            for schema_sql in ALL_SCHEMAS.values():
+                cursor.executescript(schema_sql)
+
+            # Remove triggers to simulate old database
+            cursor.execute("DROP TRIGGER IF EXISTS edges_delete_outgoing_on_symbol_delete")
+            cursor.execute("DROP TRIGGER IF EXISTS edges_delete_incoming_on_symbol_delete")
+            conn.commit()
+            conn.close()
+
+            # Now open with SQLiteStore - should run migration
+            store = SQLiteStore(db_path, init=False)
+
+            # Verify migrations table was created
+            cursor = store.conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='_migrations'"
+            )
+            result = cursor.fetchone()
+            assert result is not None, "Migrations table should be created on old DB"
+
+            # Verify triggers were added by migration
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='trigger' AND name LIKE '%edges_delete%'
+            """)
+            triggers = [row[0] for row in cursor.fetchall()]
+            assert len(triggers) >= 2, "Cascade triggers should be added"
+
+            store.close()
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    def test_migration_idempotent(self):
+        """Test that running migration twice is safe."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            # Create and initialize
+            store = SQLiteStore(db_path, init=True)
+
+            # Close and reopen - should run migrations again
+            store.close()
+            store = SQLiteStore(db_path, init=False)
+
+            # Should not cause errors
+            cursor = store.conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM _migrations")
+            count = cursor.fetchone()[0]
+            assert count == 1, "Migration should only be recorded once"
+
+            store.close()
+        finally:
+            Path(db_path).unlink(missing_ok=True)

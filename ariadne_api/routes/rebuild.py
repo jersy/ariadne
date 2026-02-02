@@ -145,25 +145,58 @@ def _run_rebuild(
 ) -> dict[str, int | str]:
     """Execute the rebuild.
 
-    This is a placeholder implementation. In a real implementation, this would:
-    1. Get the project root from environment or config
-    2. Run the extractor to re-index changed files
-    3. Update symbols and edges in the database
-    4. Mark stale L1 summaries for regeneration
+    For full rebuilds, uses shadow rebuild with atomic swap for safety.
+    For incremental rebuilds, updates only changed files.
     """
     with job_queue.acquire_job(job_id):
         project_root = os.environ.get("ARIADNE_PROJECT_ROOT", ".")
         db_path = os.environ.get("ARIADNE_DB_PATH", "ariadne.db")
+        service_url = os.environ.get("ARIADNE_ASM_SERVICE_URL", "http://localhost:8766")
 
-        logger.info(f"Starting {mode} rebuild for {project_root}")
-
-        # Import here to avoid circular dependency
-        from ariadne_core.extractors.asm.extractor import Extractor
+        logger.info(
+            f"Starting {mode} rebuild for {project_root}",
+            extra={
+                "event": "rebuild_start",
+                "mode": mode,
+                "project_root": project_root,
+            }
+        )
 
         if mode == "full":
-            # Full rebuild: re-extract everything
-            with Extractor(db_path=db_path, init=False) as extractor:
-                result = extractor.extract_project(project_root)
+            # Full rebuild: use shadow rebuild with atomic swap
+            from ariadne_core.storage.shadow_rebuilder import (
+                RebuildFailedError,
+                ShadowRebuilder,
+            )
+
+            rebuilder = ShadowRebuilder(
+                db_path=db_path,
+                project_root=project_root,
+                service_url=service_url,
+            )
+
+            try:
+                result = rebuilder.rebuild_full()
+                logger.info(
+                    f"Full rebuild completed successfully",
+                    extra={
+                        "event": "rebuild_complete",
+                        "mode": mode,
+                        "symbols_indexed": result.get("symbols_indexed"),
+                        "duration": result.get("duration_seconds"),
+                    }
+                )
+                return result
+            except RebuildFailedError as e:
+                logger.error(
+                    f"Full rebuild failed: {e}",
+                    extra={
+                        "event": "rebuild_failed",
+                        "mode": mode,
+                        "error": str(e),
+                    }
+                )
+                raise
         else:
             # Incremental: only specified paths
             symbols_updated = 0
@@ -180,11 +213,11 @@ def _run_rebuild(
                 "symbols_updated": symbols_updated,
                 "edges_updated": edges_updated,
                 "summaries_regenerated": summaries_regenerated,
-                "duration_seconds": 0,  # Would track actual duration
+                "duration_seconds": 0,
             }
 
-        logger.info(f"Rebuild completed: {result}")
-        return result
+            logger.info(f"Incremental rebuild completed: {result}")
+            return result
 
 
 def _mark_stale_summaries_for_paths(

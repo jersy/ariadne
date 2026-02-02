@@ -61,6 +61,44 @@ class TestMapper:
             "additional_tests": [str(p) for p in existing_tests[1:]],
         }
 
+    def find_tests_for_file_path(
+        self,
+        file_path: str,
+        fqns: list[str],
+    ) -> dict[str, object] | None:
+        """Find test files for symbols that share the same file path.
+
+        This is an optimized version that processes multiple FQNs at once,
+        avoiding redundant file system checks.
+
+        Args:
+            file_path: The source file path
+            fqns: List of FQNs that are in this file
+
+        Returns:
+            Dictionary with test file information, or None if no tests found
+        """
+        source_path = Path(file_path)
+
+        # Generate possible test file paths (once per file)
+        test_paths = self._generate_test_paths(source_path)
+
+        # Check which test files exist
+        existing_tests = []
+        for test_path in test_paths:
+            if test_path.exists():
+                existing_tests.append(test_path)
+
+        if not existing_tests:
+            return None
+
+        # Get test file details
+        return {
+            "path": str(existing_tests[0]),
+            "covers": fqns,  # All FQNs covered by this test file
+            "additional_tests": [str(p) for p in existing_tests[1:]],
+        }
+
     def _generate_test_paths(self, source_path: Path) -> list[Path]:
         """Generate possible test file paths from source path.
 

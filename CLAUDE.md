@@ -119,6 +119,85 @@ mypy ariadne_core/
 
 ---
 
+## 并行 LLM 摘要化
+
+### 性能预期
+
+| 场景 | 符号数量 | 预期耗时 | 吞吐量 |
+|------|---------|---------|--------|
+| 增量更新 | 1,000 符号 | < 2 分钟 | ~8-10 符号/秒 |
+| 批量处理 | 100,000 符号 | < 2 小时 | ~14 符号/秒 |
+
+**实际性能取决于：**
+- LLM API 响应时间（智谱/DeepSeek 通常 0.5-2 秒/请求）
+- 并发数配置（默认 10 workers）
+- 网络延迟和 API 速率限制
+
+### 配置
+
+```python
+# ariadne_llm/config.py
+@dataclass
+class LLMConfig:
+    # 并发配置
+    max_workers: int = 10           # 最大并发 LLM 调用数
+    request_timeout: float = 30.0  # 单个请求超时时间（秒）
+
+    # API 配置
+    api_key: str = ""
+    api_base: str = ""
+    model: str = "glm-4-flash"
+```
+
+**调整建议：**
+- 速率限制问题：降低 `max_workers` (建议 5-8)
+- API 较慢：增加 `request_timeout`
+- 内存不足：降低 `max_workers`
+
+### 使用方式
+
+**增量更新（推荐）：**
+```python
+from ariadne_analyzer.l1_business import IncrementalSummarizerCoordinator
+
+coordinator = IncrementalSummarizerCoordinator(llm_client, store, max_workers=10)
+result = coordinator.regenerate_incremental(changed_fqns)
+
+print(f"Regenerated: {result.regenerated_count}")
+print(f"Cached: {result.skipped_cached}")
+print(f"Duration: {result.duration_seconds:.2f}s")
+print(result.cost_report)
+```
+
+**批量处理：**
+```python
+from ariadne_analyzer.l1_business import ParallelSummarizer
+
+summarizer = ParallelSummarizer(llm_client, max_workers=10)
+summaries = summarizer.summarize_symbols_batch(symbols, show_progress=True)
+```
+
+### 性能监控
+
+`IncrementalResult` 包含详细的性能指标：
+- `dependency_analysis_time`: 依赖分析耗时
+- `symbol_load_time`: 符号加载耗时
+- `summarization_time`: 摘要生成耗时
+- `database_update_time`: 数据库更新耗时
+- `throughput_per_second`: 每秒处理符号数
+
+**日志输出示例：**
+```
+INFO: Starting incremental update (changed_count: 100, max_workers: 10)
+INFO: Incremental update: 250 symbols to regenerate (100 changed + 150 dependents)
+INFO: dependency_analysis_complete in 0.12s
+INFO: Filtered 250 symbols to process, 50 cached
+INFO: Generated 200 summaries in 18.5s (10.8 summaries/sec)
+INFO: Incremental update complete: 200 regenerated, 50 cached, 19.2s total
+```
+
+---
+
 ## 相关文档
 
 - **计划文档**: `docs/plans/2026-01-31-feat-ariadne-codebase-knowledge-graph-plan.md`

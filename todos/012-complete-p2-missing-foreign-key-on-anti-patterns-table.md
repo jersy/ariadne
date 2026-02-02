@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p2
 issue_id: "012"
 tags:
@@ -208,6 +208,8 @@ severity TEXT NOT NULL CHECK(severity IN ('error', 'warning', 'info'))
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-01 | Code review completed | Missing foreign keys on anti_patterns identified |
+| 2026-02-02 | Schema verified | FK constraints already exist for from_fqn and to_fqn |
+| 2026-02-02 | Verified complete | Issue already fixed by previous commits |
 
 ## Resources
 
