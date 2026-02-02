@@ -20,3 +20,8 @@ ariadne_vectors/
 
 # Coverage
 .coverage
+
+# Java/Maven build output
+asm-analysis-service/target/
+*.jar
+*.class
