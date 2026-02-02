@@ -14,12 +14,14 @@ from ariadne_api.rate_limiter import RateLimitConfig, RateLimitMiddleware, get_r
 from ariadne_api.routes.check import router as check_router
 from ariadne_api.routes.constraints import router as constraints_router
 from ariadne_api.routes.graph import router as graph_router
+from ariadne_api.routes.glossary import router as glossary_router
 from ariadne_api.routes.health import router as health_router
 from ariadne_api.routes.impact import router as impact_router
 from ariadne_api.routes.jobs import router as jobs_router
 from ariadne_api.routes.rebuild import router as rebuild_router
 from ariadne_api.routes.search import router as search_router
 from ariadne_api.routes.symbol import router as symbol_router
+from ariadne_api.routes import tests as tests_router
 from ariadne_api.schemas.common import HealthResponse
 
 # Get configuration from environment
@@ -106,6 +108,8 @@ app.include_router(rebuild_router, prefix=f"/api/{API_VERSION}", tags=["rebuild"
 app.include_router(jobs_router, prefix=f"/api/{API_VERSION}", tags=["jobs"])
 app.include_router(constraints_router, prefix=f"/api/{API_VERSION}", tags=["constraints"])
 app.include_router(check_router, prefix=f"/api/{API_VERSION}", tags=["check"])
+app.include_router(glossary_router, prefix=f"/api/{API_VERSION}/knowledge", tags=["glossary"])
+app.include_router(tests_router.router, prefix=f"/api/{API_VERSION}/knowledge", tags=["tests"])
 
 # Legacy unversioned endpoints for backward compatibility (deprecated)
 # TODO: Add deprecation warning headers

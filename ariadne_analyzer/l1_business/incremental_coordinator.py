@@ -267,12 +267,25 @@ class IncrementalSummarizerCoordinator:
 
         # 5. Batch update database
         db_start = time.time()
+
+        # Batch fetch all existing summaries to avoid N+1 queries
+        if summaries:
+            placeholders = ",".join("?" * len(summaries))
+            with self.store.conn.cursor() as cursor:
+                existing_summaries = cursor.execute(
+                    f"SELECT target_fqn, is_stale FROM summaries WHERE target_fqn IN ({placeholders})",
+                    list(summaries.keys())
+                ).fetchall()
+                # Build lookup dict: FQN -> is_stale
+                fresh_summaries = {row[0]: row[1] for row in existing_summaries if not row[1]}
+        else:
+            fresh_summaries = {}
+
         for fqn, summary_text in summaries.items():
             from ariadne_core.models.types import SummaryData, SummaryLevel
 
-            # Re-check if still needs update (concurrent modification detection)
-            existing = self.store.get_summary(fqn)
-            if existing and not existing.get("is_stale"):
+            # Check if already fresh (O(1) lookup instead of DB query)
+            if fqn in fresh_summaries:
                 logger.info(f"Skipping {fqn} - no longer stale (concurrent update)")
                 continue
 

@@ -985,9 +985,6 @@ class SQLiteStore:
         except Exception as e:
             logger.error(f"Failed to mark summaries stale: {e}")
             raise
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM glossary")
-        return cursor.fetchone()[0]
 
     # ========================
     # Test Mapping and Coverage
