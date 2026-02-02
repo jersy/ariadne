@@ -1,61 +1,74 @@
-# Changelog
+# 变更日志
 
-All notable changes to Ariadne will be documented in this file.
+本文件记录 Ariadne 的所有重要变更。
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
+本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
 
-### Added
-- HTTP API layer with FastAPI for all capabilities
-- Glossary API endpoints for domain vocabulary access
-- Prompt injection protection in LLM client
-- Agent-native API completeness
+### 新增
+- 测试映射功能：支持 Maven Surefire 测试约定
+- 覆盖率分析：基于调用图的测试覆盖分析
+- 批量 API 端点：提高 Agent 效率
+- 正则表达式缓存：性能优化
 
-### Changed
-- Strengthened system prompts with security rules
-- Improved rate limiting and middleware
-- Enhanced error handling and logging
+### 变更
+- 完全中文化文档（README、ARCHITECTURE、DEVELOPMENT）
+- 优化覆盖率分析性能（消除 N+1 查询）
 
-### Fixed
-- N+1 query pattern in impact analyzer
-- Thread safety issues in incremental coordinator
-- Dual-write consistency between SQLite and ChromaDB
-- Cascade delete orphaned edges
+### 修复
+- N+1 查询：覆盖率分析中的性能问题
+- 未缓存的正则编译：每次方法调用都重新编译
+- 中英文不一致：警告消息统一使用英文
 
 ## [0.4.0] - 2026-02-02
 
-### Added
-- L1 Business Layer with natural language summaries
-- Domain glossary extraction
-- HTTP API endpoints (search, graph, impact, constraints, glossary)
-- Rate limiting middleware
-- Request tracing middleware
+### 新增
+- HTTP API 层（FastAPI）覆盖所有功能
+- 领域术语表 API 端点
+- LLM 客户端提示注入防护
+- Agent 原生 API 完整性
+- 测试映射和覆盖率分析
+- 批量操作支持
 
-### Changed
-- Improved LLM client with retry logic
-- Enhanced batch processing capabilities
+### 变更
+- 加强系统提示词的安全规则
+- 改进速率限制和中间件
+- 增强错误处理和日志记录
+
+### 修复
+- 影响分析器中的 N+1 查询模式
+- 增量协调器中的线程安全问题
+- SQLite 和 ChromaDB 之间的双写一致性
+- 级联删除孤儿边
+- 并行摘要器的竞态条件
+- LLM 成本跟踪器的线程安全性
 
 ## [0.3.0] - 2026-02-01
 
-### Added
-- Three-layer knowledge architecture
-- Vector embedding search with ChromaDB
-- Impact analysis for change prediction
-- Anti-pattern detection
+### 新增
+- L1 业务层：自然语言摘要
+- 领域术语表提取
+- HTTP API 端点（搜索、图谱、影响、约束、术语表）
+- 速率限制中间件
+- 请求追踪中间件
+
+### 变更
+- 改进 LLM 客户端，增加重试逻辑
+- 增强批量处理能力
 
 ## [0.2.0] - 2026-01-31
 
-### Added
-- ASM-based bytecode extraction
-- Symbol indexing
-- Call graph analysis
-- Test mapping
+### 新增
+- 三层知识架构
+- 向量嵌入搜索（ChromaDB）
+- 变更影响分析
+- 反模式检测
 
 ## [0.1.0] - 2026-01-30
 
-### Added
-- Initial project structure
-- Basic symbol extraction
-- SQLite storage
+### 新增
+- 初始项目结构
+- 基本符号提取
+- SQLite 存储
