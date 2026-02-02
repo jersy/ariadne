@@ -61,15 +61,83 @@ ariadne/
 ├── ariadne_core/          # 核心解析层
 │   ├── extractors/        # ASM 字节码分析
 │   ├── storage/           # SQLite + ChromaDB
+│   │   ├── sqlite_store.py        # 图存储（含测试映射）
+│   │   └── chroma_store.py        # 向量存储
 │   └── models/            # 数据模型
 ├── ariadne_analyzer/      # 分析层
 │   ├── l1_business/       # L1 业务层
+│   │   ├── summarizer.py              # 摘要生成
+│   │   ├── glossary.py                # 术语表提取
+│   │   ├── constraints.py             # 约束提取
+│   │   ├── parallel_summarizer.py     # 并行处理
+│   │   ├── incremental_coordinator.py # 增量更新
+│   │   ├── dependency_tracker.py      # 依赖跟踪
+│   │   └── cost_tracker.py            # 成本跟踪
 │   ├── l2_architecture/   # L2 架构层
 │   └── l3_implementation/ # L3 实现层
 ├── ariadne_api/           # FastAPI 服务
+│   ├── routes/            # API 端点
+│   │   ├── health.py      # 健康检查
+│   │   ├── symbol.py      # 符号查询
+│   │   ├── glossary.py    # 术语表
+│   │   ├── tests.py       # 测试映射 ⭐
+│   │   ├── search.py      # 语义搜索
+│   │   ├── impact.py      # 影响分析
+│   │   ├── graph.py       # 图查询
+│   │   ├── constraints.py # 约束查询
+│   │   ├── check.py       # 反模式检查
+│   │   ├── rebuild.py     # 图谱重建
+│   │   └── jobs.py        # 任务管理
+│   ├── schemas/           # Pydantic 模型
+│   │   ├── symbol.py
+│   │   ├── glossary.py
+│   │   ├── tests.py       # 测试映射模型 ⭐
+│   │   ├── search.py
+│   │   ├── impact.py
+│   │   └── ...
+│   └── middleware/        # 中间件（限流、追踪）
 ├── ariadne_llm/           # LLM 客户端
+│   ├── client.py          # OpenAI 兼容客户端
+│   ├── embedder.py        # 向量嵌入
+│   └── config.py          # 配置
+├── ariadne_cli/           # 命令行接口
 └── tests/                 # 测试
+    ├── unit/              # 单元测试
+    │   └── test_test_mapping.py  # 测试映射测试 ⭐
+    ├── integration/       # 集成测试
+    └── api/               # API 测试
 ```
+
+⭐ = 新增功能
+
+---
+
+## API 端点
+
+### 健康检查
+- `GET /health` - 服务健康检查
+
+### 知识查询
+- `GET /api/v1/knowledge/symbol/{fqn:path}` - 符号详情
+- `GET /api/v1/knowledge/glossary` - 领域术语表（分页）
+- `GET /api/v1/knowledge/glossary/{term}` - 术语定义
+- `GET /api/v1/knowledge/constraints/{fqn:path}` - 业务约束
+
+### 测试映射 ⭐ 新增
+- `GET /api/v1/knowledge/tests/{fqn:path}` - 获取测试文件映射
+- `POST /api/v1/knowledge/tests/batch` - 批量测试映射（Agent 原生）
+- `GET /api/v1/knowledge/coverage` - 覆盖率分析
+- `POST /api/v1/knowledge/coverage/batch` - 批量覆盖率分析（Agent 原生）
+
+### 搜索与分析
+- `POST /api/v1/search` - 语义代码搜索
+- `POST /api/v1/graph/query` - 图遍历查询
+- `POST /api/v1/impact` - 变更影响分析
+- `POST /api/v1/check` - 反模式检测
+
+### 系统管理
+- `POST /api/v1/rebuild` - 重建知识图谱
+- `GET /api/v1/jobs/{job_id}` - 任务状态查询
 
 ---
 
@@ -186,21 +254,83 @@ summaries = summarizer.summarize_symbols_batch(symbols, show_progress=True)
 - `database_update_time`: 数据库更新耗时
 - `throughput_per_second`: 每秒处理符号数
 
-**日志输出示例：**
+---
+
+## 测试映射特性 ⭐ 新增
+
+### Maven Surefire 约定
+
+支持的测试文件命名模式：
+- `Test*.java` (如 `TestUserService.java`)
+- `*Test.java` (如 `UserServiceTest.java`) - **推荐**
+- `*Tests.java` (如 `UserServiceTests.java`)
+- `*IT.java` (如 `UserServiceIT.java` - 集成测试)
+
+### 目录结构映射
+
 ```
-INFO: Starting incremental update (changed_count: 100, max_workers: 10)
-INFO: Incremental update: 250 symbols to regenerate (100 changed + 150 dependents)
-INFO: dependency_analysis_complete in 0.12s
-INFO: Filtered 250 symbols to process, 50 cached
-INFO: Generated 200 summaries in 18.5s (10.8 summaries/sec)
-INFO: Incremental update complete: 200 regenerated, 50 cached, 19.2s total
+src/main/java/.../Foo.java  →  src/test/java/.../FooTest.java
 ```
+
+### 使用示例
+
+```bash
+# 获取测试文件映射
+curl "http://localhost:8000/api/v1/knowledge/tests/com.example.UserService"
+
+# 批量测试映射（Agent 原生）
+curl -X POST "http://localhost:8000/api/v1/knowledge/tests/batch" \
+  -H "Content-Type: application/json" \
+  -d '{"fqns": ["com.example.UserService", "com.example.OrderService"]}'
+
+# 获取覆盖率分析
+curl "http://localhost:8000/api/v1/knowledge/coverage?target=com.example.PaymentService"
+
+# 批量覆盖率分析（Agent 原生）
+curl -X POST "http://localhost:8000/api/v1/knowledge/coverage/batch" \
+  -H "Content-Type: application/json" \
+  -d '{"targets": ["com.example.ServiceA", "com.example.ServiceB"]}'
+```
+
+### API 测试
+
+```bash
+# 运行测试映射测试
+pytest tests/unit/test_test_mapping.py -v
+
+# 运行覆盖率分析测试
+pytest tests/unit/test_test_mapping.py::TestAnalyzeCoverage -v
+```
+
+---
+
+## 存储层优化
+
+### 性能优化要点
+
+- **批量操作**: 使用 `batch_update_summaries()`, `batch_get_symbols()`
+- **索引优化**: 关键查询字段建立索引
+- **N+1 查询修复**: 单次查询获取调用者信息
+- **正则缓存**: 类级别常量预编译测试方法提取
+
+### 线程安全
+
+- **线程本地连接**: 每线程独立 SQLite 连接
+- **锁保护**: `ParallelSummarizer.stats`, `LLMCostTracker.usage`
+- **原子操作**: CAS 更新陈旧标记
+
+### 双写一致性
+
+- **两阶段提交**: SQLite + ChromaDB
+- **影子重建**: 原子交换集合
+- **自动恢复**: 孤儿记录恢复机制
 
 ---
 
 ## 相关文档
 
 - **计划文档**: `docs/plans/2026-01-31-feat-ariadne-codebase-knowledge-graph-plan.md`
+- **测试映射计划**: `docs/plans/2026-02-02-feat-test-mapping-and-coverage-plan.md`
 - **审查指南**: `docs/reviews/review-guidelines.md`
 - **本地开发安全例外**: `docs/solutions/development-workflows/local-dev-security-exceptions.md`
 
@@ -241,7 +371,7 @@ cp ~/.claude-template/settings.json <worktree-path>/.claude/
 **故障排查：**
 - **问题**: 新 worktree 没有 settings.json
   - **解决**: 检查模板是否存在 `ls ~/.claude-template/settings.json`
-  - **重新运行设置脚本
+  - 重新运行设置脚本
 
 - **问题**: 使用 `git worktree add` 后配置没有同步
   - **原因**: Apple Git 2.39.5 不支持 `post-worktree` hook
@@ -272,3 +402,4 @@ cp ~/.claude-template/settings.json <worktree-path>/.claude/
 2. 专注于真正的代码质量问题（SQL 注入、N+1 查询、线程安全等）
 3. 优先考虑正确性、性能和可维护性
 4. 避免过度工程化
+5. **Agent 原生设计**: 新功能应提供批量操作接口，提高 Agent 效率
