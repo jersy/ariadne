@@ -598,6 +598,34 @@ class SQLiteStore:
         self.conn.commit()
         return cursor.rowcount
 
+    def batch_create_summaries(self, summaries: list[SummaryData]) -> int:
+        """Create multiple summary records in batch.
+
+        Uses executemany() for efficient bulk inserts with upsert support.
+
+        Args:
+            summaries: List of SummaryData objects to create
+
+        Returns:
+            Number of summaries created/updated
+        """
+        if not summaries:
+            return 0
+
+        cursor = self.conn.cursor()
+        cursor.executemany(
+            """INSERT INTO summaries (target_fqn, level, summary, vector_id, is_stale, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(target_fqn) DO UPDATE SET
+               summary = excluded.summary,
+               vector_id = excluded.vector_id,
+               is_stale = excluded.is_stale,
+               updated_at = excluded.updated_at""",
+            [s.to_row() for s in summaries],
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
     def get_stale_summaries(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Get summaries marked as stale.
 

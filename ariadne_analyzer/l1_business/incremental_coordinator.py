@@ -281,12 +281,17 @@ class IncrementalSummarizerCoordinator:
         else:
             fresh_summaries = {}
 
-        for fqn, summary_text in summaries.items():
-            from ariadne_core.models.types import SummaryData, SummaryLevel
+        from ariadne_core.models.types import SummaryData, SummaryLevel
 
+        # Build all SummaryData objects for batch insert
+        summaries_to_create: list[SummaryData] = []
+        skipped_concurrent = 0
+
+        for fqn, summary_text in summaries.items():
             # Check if already fresh (O(1) lookup instead of DB query)
             if fqn in fresh_summaries:
                 logger.info(f"Skipping {fqn} - no longer stale (concurrent update)")
+                skipped_concurrent += 1
                 continue
 
             # Determine level
@@ -299,13 +304,19 @@ class IncrementalSummarizerCoordinator:
                 else:
                     level = SummaryLevel.METHOD
 
-                summary = SummaryData(
-                    target_fqn=fqn,
-                    level=level,
-                    summary=summary_text,
-                    is_stale=False,  # Fresh summary
+                summaries_to_create.append(
+                    SummaryData(
+                        target_fqn=fqn,
+                        level=level,
+                        summary=summary_text,
+                        is_stale=False,  # Fresh summary
+                    )
                 )
-                self.store.create_summary(summary)
+
+        # Batch create all summaries in one operation
+        if summaries_to_create:
+            created_count = self.store.batch_create_summaries(summaries_to_create)
+            logger.info(f"Batch created {created_count} summaries")
 
         db_time = time.time() - db_start
 
