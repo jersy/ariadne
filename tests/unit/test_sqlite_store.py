@@ -200,3 +200,140 @@ class TestCleanup:
         assert deleted == 1
         assert store.get_symbol("A") is None
         assert store.get_symbol("B") is not None
+
+
+class TestBatchCreateSummaries:
+    """Tests for batch_create_summaries() method (Phase 4.1)."""
+
+    def test_batch_create_empty_list(self, store: SQLiteStore):
+        """Test batch create with empty list returns 0."""
+        from ariadne_core.models.types import SummaryData, SummaryLevel
+
+        count = store.batch_create_summaries([])
+        assert count == 0
+
+    def test_batch_create_single_summary(self, store: SQLiteStore):
+        """Test batch create with single summary."""
+        from ariadne_core.models.types import SummaryData, SummaryLevel, SymbolKind
+
+        # First create the symbol for foreign key constraint
+        store.insert_symbols([
+            SymbolData(
+                fqn="com.example.ClassA",
+                kind=SymbolKind.CLASS,
+                name="ClassA",
+            )
+        ])
+
+        summary = SummaryData(
+            target_fqn="com.example.ClassA",
+            level=SummaryLevel.CLASS,
+            summary="Test summary",
+            is_stale=False,
+        )
+        count = store.batch_create_summaries([summary])
+        assert count == 1
+
+        # Verify in database
+        result = store.get_summary("com.example.ClassA")
+        assert result is not None
+        assert result["summary"] == "Test summary"
+        assert result["is_stale"] == 0
+
+    def test_batch_create_multiple_summaries(self, store: SQLiteStore):
+        """Test batch create with multiple summaries."""
+        from ariadne_core.models.types import SummaryData, SummaryLevel, SymbolKind
+
+        # Create symbols for foreign key constraint
+        symbols = [
+            SymbolData(fqn=f"com.example.Class{i}", kind=SymbolKind.CLASS, name=f"Class{i}")
+            for i in range(10)
+        ]
+        store.insert_symbols(symbols)
+
+        summaries = [
+            SummaryData(
+                target_fqn=f"com.example.Class{i}",
+                level=SummaryLevel.CLASS,
+                summary=f"Summary {i}",
+                is_stale=False,
+            )
+            for i in range(10)
+        ]
+
+        count = store.batch_create_summaries(summaries)
+        assert count == 10
+
+        # Verify all in database
+        for i in range(10):
+            fqn = f"com.example.Class{i}"
+            result = store.get_summary(fqn)
+            assert result is not None
+            assert result["summary"] == f"Summary {i}"
+
+    def test_batch_upsert_replaces_existing(self, store: SQLiteStore):
+        """Test batch upsert replaces existing summaries."""
+        from ariadne_core.models.types import SummaryData, SummaryLevel, SymbolKind
+
+        # Create the symbol
+        store.insert_symbols([
+            SymbolData(fqn="com.example.ClassA", kind=SymbolKind.CLASS, name="ClassA")
+        ])
+
+        # Create initial summary
+        summary1 = SummaryData(
+            target_fqn="com.example.ClassA",
+            level=SummaryLevel.CLASS,
+            summary="Original summary",
+            is_stale=True,
+        )
+        store.create_summary(summary1)
+
+        # Batch create updated version
+        summary2 = SummaryData(
+            target_fqn="com.example.ClassA",
+            level=SummaryLevel.CLASS,
+            summary="Updated summary",
+            is_stale=False,
+        )
+        count = store.batch_create_summaries([summary2])
+        assert count == 1
+
+        # Verify updated
+        result = store.get_summary("com.example.ClassA")
+        assert result["summary"] == "Updated summary"
+        assert result["is_stale"] == 0
+
+    def test_batch_create_mixed_levels(self, store: SQLiteStore):
+        """Test batch create with different summary levels."""
+        from ariadne_core.models.types import SummaryData, SummaryLevel, SymbolKind
+
+        # Create symbols for foreign key constraint
+        store.insert_symbols([
+            SymbolData(fqn="com.example.MyClass", kind=SymbolKind.CLASS, name="MyClass"),
+            SymbolData(fqn="com.example.myMethod", kind=SymbolKind.METHOD, name="myMethod"),
+        ])
+
+        summaries = [
+            SummaryData(
+                target_fqn="com.example.MyClass",
+                level=SummaryLevel.CLASS,
+                summary="Class summary",
+                is_stale=False,
+            ),
+            SummaryData(
+                target_fqn="com.example.myMethod",
+                level=SummaryLevel.METHOD,
+                summary="Method summary",
+                is_stale=False,
+            ),
+        ]
+
+        count = store.batch_create_summaries(summaries)
+        assert count == 2
+
+        # Verify correct levels
+        class_result = store.get_summary("com.example.MyClass")
+        method_result = store.get_summary("com.example.myMethod")
+        assert class_result["level"] == "class"
+        assert method_result["level"] == "method"

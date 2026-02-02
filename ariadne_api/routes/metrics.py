@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get(
-    "/api/v1/metrics",
+    "/metrics",
     response_model=MetricsResponse,
     tags=["metrics"],
 )
@@ -44,7 +44,7 @@ async def get_metrics() -> MetricsResponse:
 
 
 @router.get(
-    "/api/v1/metrics/endpoints",
+    "/metrics/endpoints",
     tags=["metrics"],
 )
 async def get_endpoint_metrics() -> dict[str, dict]:
@@ -63,7 +63,7 @@ async def get_endpoint_metrics() -> dict[str, dict]:
 
 
 @router.get(
-    "/api/v1/metrics/health",
+    "/metrics/health",
     response_model=HealthStatus,
     tags=["metrics"],
 )
@@ -110,7 +110,7 @@ async def get_health_with_metrics() -> HealthStatus:
 
 
 @router.post(
-    "/api/v1/metrics/reset",
+    "/metrics/reset",
     tags=["metrics"],
 )
 async def reset_metrics() -> dict[str, str]:
