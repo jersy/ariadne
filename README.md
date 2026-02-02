@@ -213,8 +213,4 @@ mypy ariadne_core/
 
 MIT
 
-## 致谢
 
-本项目受以下项目启发并基于其构建：
-- [CallGraph](https://github.com/gousiosg/java-callgraph) - Java 调用图分析
-- [ai-memory-system](https://github.com/fum2024/ai-memory-system) - AI 记忆架构
