@@ -271,13 +271,16 @@ class IncrementalSummarizerCoordinator:
         # Batch fetch all existing summaries to avoid N+1 queries
         if summaries:
             placeholders = ",".join("?" * len(summaries))
-            with self.store.conn.cursor() as cursor:
+            cursor = self.store.conn.cursor()
+            try:
                 existing_summaries = cursor.execute(
                     f"SELECT target_fqn, is_stale FROM summaries WHERE target_fqn IN ({placeholders})",
                     list(summaries.keys())
                 ).fetchall()
                 # Build lookup dict: FQN -> is_stale
                 fresh_summaries = {row[0]: row[1] for row in existing_summaries if not row[1]}
+            finally:
+                cursor.close()
         else:
             fresh_summaries = {}
 
